@@ -1,144 +1,169 @@
-import dotenv from 'dotenv';
 import express from 'express';
-import { BlueBubblesClient } from './integrations/BlueBubblesClient';
-import winston from 'winston';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import cors from 'cors';
+import Bull from 'bull';
+import { initializeDatabase, closeDatabase } from './database/connection';
+import { getMessageRouter } from './services/MessageRouter';
+import { getReminderService } from './services/ReminderService';
+import { getContextService } from './services/ContextService';
+import { logInfo, logError, logWarn } from './utils/logger';
+import { config } from './config';
 
-// Load environment variables
-dotenv.config();
-
-// Initialize logger
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.json(),
-  defaultMeta: { service: 'agent-service' },
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      )
-    }),
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' })
-  ]
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+    methods: ['GET', 'POST']
+  }
 });
 
-// Initialize Express app
-const app = express();
+// Middleware
+app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+  logInfo(`${req.method} ${req.path}`, {
+    ip: req.ip,
+    userAgent: req.get('user-agent')
+  });
+  next();
+});
+
+// ==================== API ENDPOINTS ====================
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    services: {
-      bluebubbles: blueBubbles?.isConnectedStatus() || false
-    }
-  });
+app.get('/health', async (req, res) => {
+  try {
+    // Check database connection
+    const dbHealthy = await checkDatabaseHealth();
+    const redisHealthy = await checkRedisHealth();
+    
+    const status = {
+      status: dbHealthy && redisHealthy ? 'healthy' : 'unhealthy',
+      timestamp: new Date().toISOString(),
+      services: {
+        database: dbHealthy ? 'connected' : 'disconnected',
+        redis: redisHealthy ? 'connected' : 'disconnected',
+        bluebubbles: 'pending'
+      }
+    };
+    
+    res.status(status.status === 'healthy' ? 200 : 503).json(status);
+  } catch (error: any) {
+    res.status(503).json({ 
+      status: 'error', 
+      error: error.message 
+    });
+  }
 });
 
-// Initialize BlueBubbles client
-let blueBubbles: BlueBubblesClient | null = null;
-
-async function initializeBlueBubbles() {
+// BlueBubbles webhook endpoint
+app.post('/webhook/bluebubbles', async (req, res) => {
   try {
-    blueBubbles = new BlueBubblesClient({
-      url: process.env.BLUEBUBBLES_URL || 'http://localhost:1234',
-      password: process.env.BLUEBUBBLES_PASSWORD || ''
-    });
+    logInfo('Received BlueBubbles webhook', { body: req.body });
+    
+    const messageRouter = await getMessageRouter();
+    // Process the webhook message
+    if (req.body.message) {
+      await messageRouter.handleIncomingMessage(req.body.message);
+    }
+    
+    res.json({ success: true });
+  } catch (error) {
+    logError('Error processing BlueBubbles webhook', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
-    // Set up message handler
-    blueBubbles.on('message', async (message) => {
-      logger.info('Received message:', {
-        guid: message.guid,
-        text: message.text,
-        chatGuid: message.chatGuid,
-        isFromMe: message.isFromMe
-      });
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
 
-      // TODO: Process message with Claude Agent SDK
-      if (!message.isFromMe) {
-        // This is where you'll integrate Claude
-        await handleIncomingMessage(message);
+// ==================== HELPER FUNCTIONS ====================
+
+async function checkDatabaseHealth(): Promise<boolean> {
+  try {
+    const { AppDataSource } = await import('./database/connection');
+    return AppDataSource.isInitialized;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function checkRedisHealth(): Promise<boolean> {
+  try {
+    const queue = new Bull('health-check', {
+      redis: {
+        port: 6379,
+        host: new URL(config.redis.url).hostname,
+        password: new URL(config.redis.url).password
       }
     });
-
-    blueBubbles.on('connected', () => {
-      logger.info('BlueBubbles connected successfully');
-    });
-
-    blueBubbles.on('disconnected', () => {
-      logger.warn('BlueBubbles disconnected');
-    });
-
-    blueBubbles.on('error', (error) => {
-      logger.error('BlueBubbles error:', error);
-    });
-
-    await blueBubbles.connect();
+    await queue.isReady();
+    await queue.close();
+    return true;
   } catch (error) {
-    logger.error('Failed to initialize BlueBubbles:', error);
-    // Continue running even if BlueBubbles fails initially
+    return false;
   }
 }
 
-async function handleIncomingMessage(message: any) {
+// ==================== SERVER INITIALIZATION ====================
+
+async function startServer() {
   try {
-    logger.info('Processing incoming message...');
+    // Connect to database
+    await initializeDatabase();
+    logInfo('Database connected successfully');
     
-    // TODO: Implement these steps
-    // 1. Load user context
-    // 2. Process with Claude Agent SDK
-    // 3. Send response back
+    // Initialize message router (which connects to BlueBubbles)
+    const messageRouter = await getMessageRouter();
+    logInfo('Message router initialized');
     
-    // For now, just echo back
-    if (blueBubbles) {
-      await blueBubbles.sendMessage(
-        message.chatGuid,
-        `Echo: ${message.text}`
-      );
-    }
-  } catch (error) {
-    logger.error('Failed to handle message:', error);
-  }
-}
-
-// Start the server
-const PORT = process.env.PORT || 3000;
-
-async function start() {
-  try {
-    // Initialize BlueBubbles connection
-    await initializeBlueBubbles();
-
-    // Start Express server
-    app.listen(PORT, () => {
-      logger.info(`Agent service running on port ${PORT}`);
-      logger.info(`Health check: http://localhost:${PORT}/health`);
+    // Initialize context service
+    const contextService = getContextService();
+    
+    // Schedule periodic cleanup of expired memories
+    setInterval(async () => {
+      await contextService.cleanupExpiredMemories();
+    }, 60 * 60 * 1000); // Every hour
+    
+    // Start HTTP server
+    const PORT = config.port;
+    httpServer.listen(PORT, () => {
+      logInfo(`🚀 Server running on port ${PORT}`);
+      logInfo(`📝 Environment: ${config.environment}`);
+      logInfo(`🔗 BlueBubbles URL: ${config.bluebubbles.url}`);
     });
   } catch (error) {
-    logger.error('Failed to start agent service:', error);
+    logError('Failed to start server', error);
     process.exit(1);
   }
 }
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM signal received: closing connections');
-  if (blueBubbles) {
-    blueBubbles.disconnect();
-  }
+process.on('SIGINT', async () => {
+  logWarn('Shutting down gracefully...');
+  
+  httpServer.close(() => {
+    logInfo('HTTP server closed');
+  });
+  
+  await closeDatabase();
+  
   process.exit(0);
 });
 
-process.on('SIGINT', () => {
-  logger.info('SIGINT signal received: closing connections');
-  if (blueBubbles) {
-    blueBubbles.disconnect();
-  }
-  process.exit(0);
+process.on('unhandledRejection', (reason, promise) => {
+  logError('Unhandled Rejection at:', { promise, reason });
 });
 
-// Start the application
-start();
+// Start the server
+startServer();
+
+// Export for testing
+export { app, io };
