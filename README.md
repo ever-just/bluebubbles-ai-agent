@@ -296,10 +296,20 @@ Critical variables to set:
 
 ## 📚 Additional Documentation
 
-- `architecture/system-design.md` - Detailed architecture
-- `deployment/digitalocean-setup.md` - Deployment guide
-- `findings/` - Research notes and analysis
+### Setup & Migration
+- **`MIGRATION-GUIDE.md`** - Complete guide for moving to a new Mac (Mac Mini setup)
+- **`SETUP-CHECKLIST.md`** - Quick checklist for new Mac installation
 - `QUICK-START.md` - Condensed setup guide
+
+### Architecture & Deployment
+- `architecture/system-design.md` - Detailed architecture
+- `deployment/digitalocean-setup.md` - Cloud deployment guide
+- `deployment/quick-deploy.sh` - Automated deployment script
+
+### Research & Analysis
+- `findings/` - Research notes and integration analysis
+- `PROJECT-STRUCTURE.md` - Repository organization
+- `COMPLEXITY-ANALYSIS.md` - Technical complexity breakdown
 
 ## 🔒 Security Notes
 
