@@ -2,7 +2,7 @@
 
 -- Create extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "vector";
+-- CREATE EXTENSION IF NOT EXISTS "vector"; -- Disabled for now, requires pgvector-enabled image
 
 -- Users table
 CREATE TABLE IF NOT EXISTS users (
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS messages (
     metadata JSONB DEFAULT '{}'::jsonb,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     tokens_used INTEGER,
-    embedding vector(1536) -- For semantic search
+    embedding JSONB -- For semantic search (stored as JSON array until pgvector is available)
 );
 
 -- Context/Memory table
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS context_memory (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP,
-    embedding vector(1536) -- For semantic search
+    embedding JSONB -- For semantic search (stored as JSON array until pgvector is available)
 );
 
 -- Reminders table

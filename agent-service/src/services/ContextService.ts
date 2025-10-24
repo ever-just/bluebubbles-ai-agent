@@ -242,7 +242,7 @@ export class ContextService {
       let context = '';
       
       // Add long-term memories
-      if (longTermMemories.success && longTermMemories.data?.length > 0) {
+      if (longTermMemories.success && longTermMemories.data && longTermMemories.data.length > 0) {
         context += 'Long-term context:\n';
         longTermMemories.data.forEach(memory => {
           context += `- ${memory.key}: ${memory.value}\n`;
@@ -251,7 +251,7 @@ export class ContextService {
       }
 
       // Add session memories
-      if (sessionMemories.success && sessionMemories.data?.length > 0) {
+      if (sessionMemories.success && sessionMemories.data && sessionMemories.data.length > 0) {
         context += 'Session context:\n';
         sessionMemories.data.forEach(memory => {
           context += `- ${memory.key}: ${memory.value}\n`;
@@ -260,7 +260,7 @@ export class ContextService {
       }
 
       // Add working memories
-      if (workingMemories.success && workingMemories.data?.length > 0) {
+      if (workingMemories.success && workingMemories.data && workingMemories.data.length > 0) {
         context += 'Current context:\n';
         workingMemories.data.forEach(memory => {
           context += `- ${memory.key}: ${memory.value}\n`;

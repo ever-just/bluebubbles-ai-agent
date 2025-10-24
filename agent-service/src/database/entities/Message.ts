@@ -32,8 +32,8 @@ export class Message {
   @Column({ name: 'tokens_used', type: 'integer', nullable: true })
   tokensUsed?: number;
 
-  @Column({ type: 'vector', length: 1536, nullable: true })
-  embedding?: number[];
+  @Column({ type: 'jsonb', nullable: true })
+  embedding?: any;
 
   // Relations
   @ManyToOne(() => Conversation, conversation => conversation.messages, { onDelete: 'CASCADE' })

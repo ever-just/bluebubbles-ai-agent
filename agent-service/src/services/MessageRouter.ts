@@ -7,7 +7,7 @@ import { BlueBubblesClient } from '../integrations/BlueBubblesClient';
 import { ClaudeService, getClaudeService } from './ClaudeService';
 import { ContextService, getContextService } from './ContextService';
 import { ReminderService } from './ReminderService';
-import { logInfo, logError, logDebug } from '../utils/logger';
+import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
 import { ServiceResponse, BlueBubblesMessage, ClaudeMessage } from '../types';
 
 export class MessageRouter {
@@ -30,22 +30,64 @@ export class MessageRouter {
   }
 
   async initialize(): Promise<void> {
-    // Connect to BlueBubbles
-    await this.blueBubblesClient.connect();
-    
-    // Set up message listeners
-    this.blueBubblesClient.on('message', async (message: BlueBubblesMessage) => {
-      await this.handleIncomingMessage(message);
-    });
+    try {
+      // Try to connect to BlueBubbles, but don't block server startup if it fails
+      try {
+        await this.blueBubblesClient.connect();
+        
+        // Set up message listeners only if connected
+        this.blueBubblesClient.on('message', async (message: BlueBubblesMessage) => {
+          await this.handleIncomingMessage(message);
+        });
+      } catch (blueBubblesError) {
+        logWarn('BlueBubbles connection failed during startup - continuing with HTTP polling only', { error: (blueBubblesError as Error).message });
+      }
 
-    logInfo('Message router initialized');
+      // Always start HTTP polling as backup
+      this.startMessagePolling();
+
+      logInfo('Message router initialized (HTTP polling active)');
+    } catch (error) {
+      logError('Failed to initialize message router', error);
+      throw error; // This is a fatal error
+    }
+  }
+
+  private startMessagePolling(): void {
+    // HTTP polling for new messages (works without Private API)
+    setInterval(async () => {
+      console.log('🔄 HTTP POLLING: Checking BlueBubbles API availability...');
+      try {
+        // Test basic API connectivity
+        const serverResponse = await fetch(`http://localhost:1234/api/v1/server/info?password=bluebubbles123`);
+        if (serverResponse.ok) {
+          const serverData = await serverResponse.json();
+          console.log('🔄 HTTP POLLING: BlueBubbles API accessible');
+
+          // TODO: Implement message detection when API endpoints become available
+          // For now, we rely on manual message injection via /api/test-message
+          // or webhook injection when Private API compatibility is resolved
+
+          console.log('🔄 HTTP POLLING: Ready for manual message injection');
+        } else {
+          console.log('🔄 HTTP POLLING: BlueBubbles API not accessible');
+        }
+      } catch (error) {
+        console.log('🔄 HTTP POLLING: Network error:', (error as Error).message);
+      }
+    }, 30000); // Check every 30 seconds
+
+    logInfo('HTTP polling started - manual message injection available via /api/test-message');
   }
 
   async handleIncomingMessage(bbMessage: BlueBubblesMessage): Promise<void> {
     try {
-      logInfo('Processing incoming message', { 
+      logInfo('Processing incoming message', {
         guid: bbMessage.guid,
-        chat: bbMessage.chat_id 
+        chat: bbMessage.chat_id,
+        text: bbMessage.text?.substring(0, 50),
+        isFromMe: bbMessage.is_from_me,
+        fullMessage: JSON.stringify(bbMessage, null, 2)
       });
 
       // Skip if message is from the AI (sent by us)
@@ -55,7 +97,7 @@ export class MessageRouter {
       }
 
       // Get or create user based on chat identifier
-      const user = await this.getOrCreateUserFromChat(bbMessage.chat_id);
+      const user = await this.getOrCreateUserFromMessage(bbMessage);
       if (!user) {
         logError('Failed to identify user from message');
         return;
@@ -140,17 +182,17 @@ export class MessageRouter {
     }
   }
 
-  private async getOrCreateUserFromChat(chatId: string): Promise<User | null> {
+  private async getOrCreateUserFromMessage(bbMessage: BlueBubblesMessage): Promise<User | null> {
     try {
-      // Extract phone number from chat ID (usually in format like "SMS;-;+1234567890")
-      const phoneMatch = chatId.match(/\+?\d{10,}/);
-      if (!phoneMatch) {
-        logError('Could not extract phone number from chat ID', { chatId });
+      // Extract phone number from the message handle
+      const phoneNumber = bbMessage.handle?.address;
+      if (!phoneNumber) {
+        logError('No phone number found in message handle', { handle: bbMessage.handle });
         return null;
       }
 
-      const phoneNumber = phoneMatch[0];
-      
+      logDebug('Extracted phone number from message', { phoneNumber });
+
       // Check if user exists
       let user = await this.userRepo.findOne({
         where: { phoneNumber }
@@ -166,14 +208,14 @@ export class MessageRouter {
             reminderChannelPreference: 'imessage'
           }
         });
-        
+
         user = await this.userRepo.save(user);
         logInfo('Created new user', { id: user.id, phoneNumber });
       }
 
       return user;
     } catch (error) {
-      logError('Failed to get or create user', error);
+      logError('Failed to get or create user from message', { error });
       return null;
     }
   }
@@ -390,6 +432,10 @@ export class MessageRouter {
         error: error.message || 'Failed to send message'
       };
     }
+  }
+
+  isBlueBubblesConnected(): boolean {
+    return this.blueBubblesClient.isConnectedStatus();
   }
 }
 

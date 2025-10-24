@@ -38,8 +38,8 @@ export class ContextMemory {
   @Column({ name: 'expires_at', type: 'timestamp', nullable: true })
   expiresAt?: Date;
 
-  @Column({ type: 'vector', length: 1536, nullable: true })
-  embedding?: number[];
+  @Column('jsonb', { nullable: true })
+  embedding?: any;
 
   // Relations
   @ManyToOne(() => User, user => user.memories, { onDelete: 'CASCADE' })

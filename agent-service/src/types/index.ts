@@ -109,6 +109,7 @@ export interface BlueBubblesMessage {
   date_delivered?: number;
   chat_id: string;
   attachments?: BlueBubblesAttachment[];
+  handle?: BlueBubblesHandle;
 }
 
 export interface BlueBubblesChat {
@@ -123,6 +124,7 @@ export interface BlueBubblesChat {
 export interface BlueBubblesHandle {
   id: number;
   identifier: string; // phone number or email
+  address?: string; // actual phone number/email address
   country?: string;
   service: string;
   uncanonical_id?: string;

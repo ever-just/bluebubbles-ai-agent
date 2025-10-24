@@ -30,7 +30,7 @@ export class ClaudeService {
       });
 
       const response = await this.anthropic.messages.create({
-        model: options?.model || this.model,
+        model: this.model,
         max_tokens: options?.maxTokens || this.maxTokens,
         temperature: options?.temperature || this.temperature,
         system: systemPrompt || this.buildSystemPrompt(),
@@ -82,7 +82,7 @@ export class ClaudeService {
       });
 
       const stream = await this.anthropic.messages.create({
-        model: options?.model || this.model,
+        model: this.model,
         max_tokens: options?.maxTokens || this.maxTokens,
         temperature: options?.temperature || this.temperature,
         system: systemPrompt || this.buildSystemPrompt(),
