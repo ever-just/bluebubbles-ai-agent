@@ -1,0 +1,11 @@
+node_modules/
+dist/
+release/
+.vscode
+.DS_Store
+**/*.log
+.env
+.build
+.swiftpm
+.yarn
+.yarnrc*

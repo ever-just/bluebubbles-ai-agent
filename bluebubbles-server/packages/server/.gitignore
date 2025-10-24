@@ -1,0 +1,9 @@
+node_modules/
+!dist/
+dist/*
+!dist/dev-app-update.yml
+releases/
+.vscode
+.DS_Store
+**/*.log
+.env

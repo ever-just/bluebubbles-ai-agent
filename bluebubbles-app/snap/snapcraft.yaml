@@ -1,0 +1,158 @@
+name: bluebubbles
+title: BlueBubbles
+version: 1.14.0.0
+summary: BlueBubbles client for Linux
+description: BlueBubbles is an open-source and cross-platform ecosystem of apps aimed to bring iMessage to Android, Windows, Linux, and more! With BlueBubbles, you'll be able to send messages, media, and much more to your friends and family.
+
+confinement: strict
+base: core24
+grade: stable
+
+platforms:
+  amd64:
+  arm64:
+
+layout:
+  /usr/share/libdrm:
+    bind: $SNAP/graphics/libdrm
+  /usr/share/drirc.d:
+    symlink: $SNAP/graphics/drirc.d
+  /usr/share/X11/XErrorDB:
+    symlink: $SNAP/graphics/X11/XErrorDB
+  /usr/share/X11/locale:
+    symlink: $SNAP/graphics/X11/locale
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/webkit2gtk-4.1:
+    bind: $SNAP/gnome-platform/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/webkit2gtk-4.1
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib:
+    bind: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib
+  /usr/share/alsa:
+    bind: $SNAP/usr/share/alsa
+
+apps:
+  bluebubbles:
+    command: bin/bluebubbles
+    command-chain:
+      - bin/gpu-2404-wrapper
+      - snap/command-chain/alsa-launch
+    extensions:
+      - gnome
+    slots:
+      - dbus-bluebubbles
+    plugs:
+      - network
+      - network-manager
+      - camera
+      - desktop
+      - desktop-legacy
+      - wayland
+      - x11
+      - home
+      - opengl
+      - alsa
+      - audio-playback
+      - audio-record
+    environment:
+      LD_LIBRARY_PATH: $LD_LIBRARY_PATH:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/blas:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/lapack:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/samba:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/vdpau:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/dri
+      ALWAYS_USE_PULSEAUDIO: '1'
+
+parts:
+  desktop-glib-only:
+    source: https://github.com/ubuntu/snapcraft-desktop-helpers.git
+    source-subdir: glib-only
+    plugin: make
+    build-packages:
+      - libglib2.0-dev
+    stage-packages:
+      - libglib2.0-bin
+
+  alsa-mixin:
+    plugin: dump
+    source: https://github.com/diddlesnaps/snapcraft-alsa.git
+    source-subdir: snapcraft-assets
+    build-packages:
+      - libasound2-dev
+    stage-packages:
+      - libasound2-plugins
+      - yad
+    stage:
+      - etc/asound.conf
+      - snap/command-chain/alsa-launch
+      - usr/bin/yad*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libasound*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libdnsfile*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libFLAC*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libjack*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libpulse*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libsamplerate*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libspeex*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libvorbis*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio
+
+  fmedia:
+    source:
+      - on amd64: https://github.com/stsaz/fmedia/releases/download/v1.31/fmedia-1.31-linux-amd64.tar.xz
+      - on arm64: ""
+    plugin: dump
+    override-build: |
+      arch=$(uname -i)
+      if [ "$arch" == 'x86_64' ]; then
+        set -eux
+        rm mod/libwavpack-ff.so
+        mkdir -p $CRAFT_PART_INSTALL/bin/fmedia-1
+        cp -r . $CRAFT_PART_INSTALL/bin/fmedia-1/
+        ln -s fmedia-1/fmedia $CRAFT_PART_INSTALL/bin/fmedia
+      fi
+
+  bluebubbles:
+    after:
+      - desktop-glib-only
+      - alsa-mixin
+      - fmedia
+    source:
+      - on amd64: https://github.com/BlueBubblesApp/bluebubbles-app/releases/download/v1.14.0%2B69/bluebubbles-linux-x86_64.tar
+      - on arm64: https://github.com/BlueBubblesApp/bluebubbles-app/releases/download/v1.14.0%2B69/bluebubbles-linux-aarch64.tar
+    plugin: nil
+    override-build: |
+      set -eux
+      mkdir -p $CRAFT_PART_INSTALL/bin
+      cp -r ./* $CRAFT_PART_INSTALL/bin/
+      mv lib/libobjectbox.so $CRAFT_PART_INSTALL/usr/lib/
+    stage-packages:
+      - gir1.2-appindicator3-0.1
+      - libglu1-mesa
+      - libmpv2
+      - libnotify4
+      - net-tools
+      - wmctrl
+      - zenity
+
+  gpu-2404:
+    after:
+      - bluebubbles
+    source: https://github.com/canonical/gpu-snap.git
+    plugin: dump
+    override-prime: |
+      craftctl default
+      ${CRAFT_PART_SRC}/bin/gpu-2404-cleanup mesa-2404 nvidia-2404
+    prime:
+      - bin/gpu-2404-wrapper
+
+  cleanup:
+    after:
+      - bluebubbles
+    plugin: nil
+    build-snaps:
+      - core24
+      - gtk-common-themes
+    override-prime: |
+      set -eux
+      for snap in "core22" "gtk-common-themes"; do
+          cd "/snap/$snap/current" && find . -type f,l -exec rm -f "$SNAPCRAFT_PRIME/{}" \;
+      done
+
+slots:
+  dbus-bluebubbles:
+    interface: dbus
+    bus: session
+    name: app.bluebubbles.BlueBubbles
