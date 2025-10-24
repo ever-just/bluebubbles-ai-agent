@@ -65,9 +65,37 @@ docker-compose ps  # Verify running
 - Install and configure with iMessage
 - Note the password for .env file
 
-### Step 9: Grant Mac Permissions
-- System Settings → Privacy & Security → Full Disk Access → Add Terminal & BlueBubbles
-- System Settings → Privacy & Security → Accessibility → Add BlueBubbles
+### Step 9: Grant Mac Permissions (MUST DO ON NEW MAC)
+
+**⚠️ These permissions do NOT transfer between Macs - must reconfigure!**
+
+#### Full Disk Access (Required)
+1. System Settings → Privacy & Security → Full Disk Access
+2. Click 🔒 and unlock with password
+3. Click "+" and add:
+   - Terminal (or iTerm)
+   - BlueBubbles Server app
+   - VS Code (if using)
+4. Toggle all ON
+5. Restart apps
+
+#### Accessibility (Required)
+1. System Settings → Privacy & Security → Accessibility
+2. Click 🔒 and unlock
+3. Click "+" and add: BlueBubbles Server app
+4. Toggle ON
+
+#### Automation (Optional - for Private API)
+1. System Settings → Privacy & Security → Automation
+2. Find BlueBubbles Server
+3. Check "Messages" and "System Events"
+
+#### Notifications (Optional)
+1. System Settings → Notifications
+2. Find BlueBubbles Server
+3. Enable "Allow Notifications"
+
+**Verify:** Open BlueBubbles → Settings → Server → Should show "Database Status: Connected"
 
 ### Step 10: Start the Service
 ```bash

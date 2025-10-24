@@ -278,18 +278,98 @@ npm start
 4. Enable "Private API" if you want advanced features
 5. Note the server URL (usually http://localhost:1234)
 
-### 4.4 Grant Mac Permissions
+### 4.4 Grant Mac Permissions (CRITICAL)
 
-BlueBubbles needs special permissions on macOS:
+**⚠️ IMPORTANT: These permissions MUST be reconfigured on the new Mac Mini**
+
+BlueBubbles Server requires special macOS permissions to access iMessage data. These permissions do NOT transfer between Macs and must be set up fresh.
+
+#### Required Permissions:
+
+**1. Full Disk Access** (Most Important)
+- Required to read iMessage database (Chat.db)
+- Without this, BlueBubbles cannot access messages
+
+**Steps:**
+```
+1. Open System Settings (or System Preferences)
+2. Go to: Privacy & Security → Full Disk Access
+3. Click the lock icon (🔒) and enter your password
+4. Click the "+" button
+5. Add these applications:
+   - Terminal (if running npm commands from Terminal)
+   - iTerm (if using iTerm instead of Terminal)
+   - BlueBubbles Server app
+   - Visual Studio Code (if debugging from VS Code)
+6. Toggle each app ON
+7. You may need to restart these apps after granting access
+```
+
+**2. Accessibility**
+- Required for BlueBubbles to send messages and interact with iMessage
+- Allows automation of iMessage app
+
+**Steps:**
+```
+1. System Settings → Privacy & Security → Accessibility
+2. Click the lock icon (🔒) and enter your password
+3. Click the "+" button
+4. Add: BlueBubbles Server app
+5. Toggle it ON
+```
+
+**3. Automation (if using Private API features)**
+- Allows BlueBubbles to control Messages.app
+
+**Steps:**
+```
+1. System Settings → Privacy & Security → Automation
+2. Find BlueBubbles Server in the list
+3. Check the box next to "Messages" or "System Events"
+```
+
+**4. Notifications (Optional but Recommended)**
+- Allows BlueBubbles to show system notifications
+
+**Steps:**
+```
+1. System Settings → Notifications
+2. Find BlueBubbles Server
+3. Enable "Allow Notifications"
+```
+
+#### Verification:
+
+After granting permissions, verify they're working:
 
 ```bash
-# System Settings → Privacy & Security → Full Disk Access
-# Add: Terminal (if running from terminal)
-# Add: BlueBubbles Server app
-
-# System Settings → Privacy & Security → Accessibility
-# Add: BlueBubbles Server app
+# Check if BlueBubbles can access the database
+# Open BlueBubbles Server app
+# Go to Settings → Server
+# You should see "Database Status: Connected"
 ```
+
+#### Common Permission Issues:
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "Cannot access Chat.db" | Full Disk Access not granted | Add Terminal/BlueBubbles to Full Disk Access |
+| "Cannot send messages" | Accessibility not granted | Add BlueBubbles to Accessibility |
+| Permissions not taking effect | Apps not restarted | Quit and reopen all apps after granting permissions |
+| Permission dialogs keep appearing | Incomplete permissions | Grant ALL required permissions listed above |
+
+#### Why These Permissions Are Needed:
+
+- **Full Disk Access**: iMessage stores messages in a protected SQLite database at `~/Library/Messages/chat.db`. macOS protects this location and requires explicit permission.
+- **Accessibility**: Sending messages requires automating the Messages app, which needs Accessibility permissions.
+- **Automation**: Advanced features like read receipts and typing indicators use AppleScript automation.
+
+#### Security Note:
+
+These permissions give BlueBubbles significant access to your system. Only grant them if:
+- ✅ You trust the BlueBubbles application
+- ✅ You understand what access you're granting
+- ✅ You've downloaded BlueBubbles from the official source
 
 ---
 
@@ -414,25 +494,169 @@ npm run dev
 
 ---
 
+## 🔐 Complete Permissions Reconfiguration Guide
+
+### What Needs to Be Reconfigured on the New Mac
+
+**⚠️ CRITICAL: All macOS permissions must be set up fresh on the Mac Mini**
+
+#### Why Permissions Don't Transfer:
+- macOS ties permissions to specific app signatures and locations
+- Moving to a new Mac = new system = new permission grants required
+- Even if you migrate via Time Machine, permissions may not work correctly
+
+#### Complete Permissions Checklist:
+
+**System-Level Permissions (macOS):**
+- [ ] Full Disk Access for Terminal/iTerm
+- [ ] Full Disk Access for BlueBubbles Server
+- [ ] Full Disk Access for VS Code (if using)
+- [ ] Accessibility for BlueBubbles Server
+- [ ] Automation for BlueBubbles Server (Messages, System Events)
+- [ ] Notifications for BlueBubbles Server
+
+**Application-Level Permissions:**
+- [ ] iMessage signed in with your Apple ID
+- [ ] BlueBubbles Server configured with password
+- [ ] BlueBubbles Server connected to iMessage database
+- [ ] Docker Desktop has necessary system access
+
+**Network/Firewall Permissions:**
+- [ ] Allow incoming connections for Node.js (port 3000)
+- [ ] Allow incoming connections for BlueBubbles (port 1234)
+- [ ] Allow Docker to access network
+
+#### Step-by-Step Permission Setup:
+
+**1. iMessage Setup (First!)**
+```
+1. Open Messages app
+2. Sign in with your Apple ID
+3. Enable iMessage
+4. Wait for messages to sync
+5. Verify you can send/receive messages
+```
+
+**2. Full Disk Access**
+```
+System Settings → Privacy & Security → Full Disk Access
+
+Add these apps (click + button):
+✓ Terminal (or iTerm2)
+✓ BlueBubbles Server
+✓ Visual Studio Code (if debugging)
+✓ Docker (if prompted)
+
+After adding, toggle each one ON
+Restart each app after granting permission
+```
+
+**3. Accessibility**
+```
+System Settings → Privacy & Security → Accessibility
+
+Add:
+✓ BlueBubbles Server
+
+Toggle ON
+Restart BlueBubbles Server
+```
+
+**4. Automation**
+```
+System Settings → Privacy & Security → Automation
+
+Find "BlueBubbles Server" in the list
+Check these boxes:
+✓ Messages
+✓ System Events
+✓ Finder (if available)
+```
+
+**5. Notifications**
+```
+System Settings → Notifications
+
+Find "BlueBubbles Server"
+Enable:
+✓ Allow Notifications
+✓ Show in Notification Center
+✓ Badge app icon
+```
+
+**6. Firewall (if enabled)**
+```
+System Settings → Network → Firewall
+
+If firewall is ON, add exceptions:
+✓ Node
+✓ BlueBubbles Server
+✓ Docker
+```
+
+#### Verification Commands:
+
+```bash
+# Test if Terminal has Full Disk Access
+ls ~/Library/Messages/chat.db
+# Should show the file, not "Permission denied"
+
+# Test if BlueBubbles can access database
+# Open BlueBubbles Server app
+# Settings → Server → Database Status should be "Connected"
+
+# Test if automation works
+# Send a test message through BlueBubbles
+# Should appear in Messages app
+```
+
+#### What Happens If Permissions Are Missing:
+
+| Missing Permission | Symptom | Fix |
+|-------------------|---------|-----|
+| Full Disk Access | "Cannot access Chat.db" error | Add app to Full Disk Access |
+| Accessibility | Cannot send messages | Add BlueBubbles to Accessibility |
+| Automation | Read receipts don't work | Add BlueBubbles to Automation |
+| iMessage not signed in | No messages appear | Sign in to Messages app |
+| Firewall blocking | Connection refused errors | Add apps to firewall exceptions |
+
 ## 📊 Checklist: Is Everything Working?
 
 Use this checklist to verify your setup:
 
+**Development Tools:**
 - [ ] Homebrew installed and updated
 - [ ] Git installed and configured
 - [ ] Node.js v18+ installed
 - [ ] Docker Desktop installed and running
 - [ ] GitHub CLI installed and authenticated
+
+**Project Setup:**
 - [ ] Repository cloned successfully
-- [ ] npm dependencies installed
-- [ ] .env file created and configured
+- [ ] npm dependencies installed (node_modules exists)
+- [ ] .env file created and configured with all keys
 - [ ] PostgreSQL container running
 - [ ] Redis container running
-- [ ] BlueBubbles Server installed and configured
-- [ ] Mac permissions granted (Full Disk Access, Accessibility)
+
+**BlueBubbles Configuration:**
+- [ ] iMessage signed in and working
+- [ ] BlueBubbles Server installed
+- [ ] BlueBubbles Server configured with password
+- [ ] BlueBubbles Server shows "Database Status: Connected"
+
+**Mac Permissions (CRITICAL):**
+- [ ] Full Disk Access granted to Terminal/iTerm
+- [ ] Full Disk Access granted to BlueBubbles Server
+- [ ] Accessibility granted to BlueBubbles Server
+- [ ] Automation granted to BlueBubbles Server
+- [ ] All apps restarted after granting permissions
+
+**Service Verification:**
 - [ ] Agent service starts without errors
-- [ ] Health endpoint responds
-- [ ] iMessage messages are received and processed
+- [ ] Health endpoint responds (curl http://localhost:3000/health)
+- [ ] BlueBubbles client shows "connected" in logs
+- [ ] Can send test iMessage and receive AI response
+- [ ] Database tables created successfully
 
 ---
 
