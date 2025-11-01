@@ -371,25 +371,27 @@ export class BlueBubblesClient extends EventEmitter {
   }
 
   private async sendMessageViaRest(chatGuid: string, text: string, attachments?: any[]): Promise<void> {
-    logInfo('Sending message via REST API', {
-      chatGuid,
-      textLength: text.length,
-      hasAttachments: attachments?.length ?? 0
-    });
-
     const url = `${this.apiUrl}/api/v1/message/text?password=${encodeURIComponent(this.password)}`;
-    const payload: Record<string, unknown> = {
-      chatGuid,
-      message: text,
-      method: 'apple-script',
-      tempGuid: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    };
 
-    if (attachments && attachments.length > 0) {
-      payload.attachments = attachments;
-    }
+    const attemptSend = async (method: 'private-api' | 'apple-script') => {
+      logInfo('Sending message via REST API', {
+        chatGuid,
+        textLength: text.length,
+        hasAttachments: attachments?.length ?? 0,
+        method
+      });
 
-    try {
+      const payload: Record<string, unknown> = {
+        chatGuid,
+        message: text,
+        method,
+        tempGuid: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      };
+
+      if (attachments && attachments.length > 0) {
+        payload.attachments = attachments;
+      }
+
       const response = await axios.post(url, payload, {
         headers: {
           'Content-Type': 'application/json'
@@ -399,14 +401,31 @@ export class BlueBubblesClient extends EventEmitter {
       if (response.data && response.data.status === 200) {
         logInfo('Message sent successfully via REST API', {
           chatGuid,
-          response: response.data.message
+          response: response.data.message,
+          method
         });
-      } else {
-        throw new Error(`Failed to send message: ${response.data?.message || 'Unknown error'}`);
+        return true;
       }
-    } catch (error: any) {
-      logError('Failed to send message via REST API', error);
-      throw error instanceof Error ? error : new Error(String(error));
+
+      throw new Error(`Failed to send message: ${response.data?.message || 'Unknown error'}`);
+    };
+
+    try {
+      await attemptSend('private-api');
+    } catch (privateApiError: any) {
+      logWarn('Private API REST send failed; attempting AppleScript fallback', {
+        chatGuid,
+        error: privateApiError instanceof Error ? privateApiError.message : String(privateApiError)
+      });
+
+      try {
+        await attemptSend('apple-script');
+      } catch (appleScriptError: any) {
+        logError('Failed to send message via REST API (all methods)', appleScriptError, {
+          chatGuid
+        });
+        throw appleScriptError instanceof Error ? appleScriptError : new Error(String(appleScriptError));
+      }
     }
   }
 }
