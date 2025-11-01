@@ -13,6 +13,8 @@ export class BlueBubblesClient extends EventEmitter {
   private isConnected = false;
   private reconnectMaxAttempts: number;
   private reconnectDelay: number;
+  private chatGuidCache = new Map<string, { guid: string; cachedAt: number }>();
+  private readonly cacheTtlMs = 5 * 60 * 1000;
 
   constructor() {
     super();
@@ -142,44 +144,34 @@ export class BlueBubblesClient extends EventEmitter {
   }
 
   async sendMessage(chatGuid: string, text: string, attachments?: any[]): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.socket || !this.isConnected) {
-        reject(new Error('Not connected to BlueBubbles server'));
+    if (!chatGuid) {
+      throw new Error('Chat GUID is required to send a message');
+    }
+
+    if (this.socket && this.isConnected) {
+      try {
+        await this.sendMessageViaSocket(chatGuid, text, attachments);
         return;
+      } catch (error) {
+        logWarn('Socket send failed; attempting REST fallback', {
+          chatGuid,
+          error: error instanceof Error ? error.message : String(error)
+        });
       }
+    }
 
-      // Try sending without callback first
-      console.log('📤 SENDING MESSAGE:', {
-        chatGuid,
-        textLength: text.length,
-        textPreview: text.substring(0, 100),
-        hasAttachments: attachments ? attachments.length : 0
-      });
-      logInfo('Sending message (no callback expected)', { chatGuid, textLength: text.length });
-      this.socket.emit('send-message', {
-        chatGuid,
-        message: text,
-        attachments
-      });
-
-      // Assume success after a short delay
-      setTimeout(() => {
-        logInfo('Message sent successfully (no callback)');
-        resolve();
-      }, 500);
-
-    });
+    await this.sendMessageViaRest(chatGuid, text, attachments);
   }
 
-  async getChats(limit?: number): Promise<any[]> {
+  async getChats(limit?: number, includeParticipants = true): Promise<any[]> {
     return new Promise((resolve, reject) => {
       if (!this.socket || !this.isConnected) {
         reject(new Error('Not connected to BlueBubbles server'));
         return;
       }
 
-      logDebug('Getting chats with limit', { limit });
-      this.socket.emit('get-chats', { limit }, (response: any) => {
+      logDebug('Getting chats with limit', { limit, includeParticipants });
+      this.socket.emit('get-chats', { limit, withParticipants: includeParticipants }, (response: any) => {
         logDebug('Get chats raw response', { response, type: typeof response });
         if (response && response.error) {
           logError('Failed to get chats', new Error(response.error));
@@ -246,5 +238,175 @@ export class BlueBubblesClient extends EventEmitter {
 
   isConnectedStatus(): boolean {
     return this.isConnected;
+  }
+
+  private normalizeHandle(address: string): string {
+    if (!address) {
+      return '';
+    }
+
+    return address.replace(/\D+/g, '');
+  }
+
+  async findChatGuidByHandle(handleAddress: string): Promise<string | null> {
+    if (!handleAddress) {
+      return null;
+    }
+
+    const normalized = this.normalizeHandle(handleAddress);
+    if (!normalized) {
+      return null;
+    }
+
+    const cached = this.chatGuidCache.get(normalized);
+    if (cached && Date.now() - cached.cachedAt < this.cacheTtlMs) {
+      logDebug('Resolved chat guid from cache', { handleAddress, guid: cached.guid });
+      return cached.guid;
+    }
+
+    if (!this.isConnected) {
+      logWarn('Cannot resolve chat guid - BlueBubbles socket not connected');
+      return null;
+    }
+
+    try {
+      const chats = await this.getChats(undefined, true);
+      for (const chat of chats) {
+        const guid: string | undefined = chat?.guid || chat?.chat_guid;
+        if (!guid) {
+          continue;
+        }
+
+        const chatIdentifier: string | undefined = chat?.chatIdentifier || chat?.chat_identifier;
+        if (chatIdentifier) {
+          const identifierDigits = this.normalizeHandle(chatIdentifier.includes(';-;') ? chatIdentifier.split(';-;').pop() ?? chatIdentifier : chatIdentifier);
+          if (identifierDigits && identifierDigits === normalized) {
+            this.chatGuidCache.set(normalized, { guid, cachedAt: Date.now() });
+            return guid;
+          }
+        }
+
+        const chatGuidDigits = this.normalizeHandle(guid.includes(';-;') ? guid.split(';-;').pop() ?? guid : guid);
+        if (chatGuidDigits && chatGuidDigits === normalized) {
+          this.chatGuidCache.set(normalized, { guid, cachedAt: Date.now() });
+          return guid;
+        }
+
+        const participants = Array.isArray(chat?.participants)
+          ? chat.participants
+          : (Array.isArray(chat?.handles) ? chat.handles : null);
+
+        if (participants) {
+          for (const participant of participants) {
+            const participantAddress: string | undefined = participant?.address
+              || participant?.contact
+              || participant?.identifier;
+
+            const participantDigits = this.normalizeHandle(String(participantAddress));
+            if (participantDigits && participantDigits === normalized) {
+              this.chatGuidCache.set(normalized, { guid, cachedAt: Date.now() });
+              return guid;
+            }
+          }
+        }
+      }
+
+      logWarn('Unable to resolve chat guid from BlueBubbles chats', { handleAddress });
+      return null;
+    } catch (error) {
+      logWarn('Failed to fetch chats for guid resolution', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  }
+
+  private async sendMessageViaSocket(chatGuid: string, text: string, attachments?: any[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket || !this.isConnected) {
+        reject(new Error('Not connected to BlueBubbles server'));
+        return;
+      }
+
+      logInfo('Sending message via WebSocket', {
+        chatGuid,
+        textLength: text.length,
+        hasAttachments: attachments?.length ?? 0
+      });
+
+      let completed = false;
+
+      const finalize = (error?: Error | string) => {
+        if (completed) {
+          return;
+        }
+        completed = true;
+        if (error) {
+          reject(typeof error === 'string' ? new Error(error) : error);
+        } else {
+          logInfo('Message sent successfully via WebSocket', { chatGuid });
+          resolve();
+        }
+      };
+
+      this.socket.emit(
+        'send-message',
+        {
+          chatGuid,
+          message: text,
+          attachments
+        },
+        (response: any) => {
+          if (response?.error) {
+            logWarn('BlueBubbles socket send reported error', { chatGuid, response });
+            finalize(typeof response.error === 'string' ? response.error : 'Socket send failed');
+          } else {
+            finalize();
+          }
+        }
+      );
+
+      setTimeout(() => finalize(), 750);
+    });
+  }
+
+  private async sendMessageViaRest(chatGuid: string, text: string, attachments?: any[]): Promise<void> {
+    logInfo('Sending message via REST API', {
+      chatGuid,
+      textLength: text.length,
+      hasAttachments: attachments?.length ?? 0
+    });
+
+    const url = `${this.apiUrl}/api/v1/message/text?password=${encodeURIComponent(this.password)}`;
+    const payload: Record<string, unknown> = {
+      chatGuid,
+      message: text,
+      method: 'apple-script',
+      tempGuid: `temp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    };
+
+    if (attachments && attachments.length > 0) {
+      payload.attachments = attachments;
+    }
+
+    try {
+      const response = await axios.post(url, payload, {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (response.data && response.data.status === 200) {
+        logInfo('Message sent successfully via REST API', {
+          chatGuid,
+          response: response.data.message
+        });
+      } else {
+        throw new Error(`Failed to send message: ${response.data?.message || 'Unknown error'}`);
+      }
+    } catch (error: any) {
+      logError('Failed to send message via REST API', error);
+      throw error instanceof Error ? error : new Error(String(error));
+    }
   }
 }

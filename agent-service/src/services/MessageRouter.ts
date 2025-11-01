@@ -27,7 +27,9 @@ export class MessageRouter {
   private messageHandlerFactory = getMessageHandlerFactory();
   private securityManager = getSecurityManager();
   private conversationSummarizer = getConversationSummarizer();
-  private readonly summaryTailLength = 8;
+  private readonly summaryTailLength = 6;
+  private readonly duplicateWindowMs = 60_000;
+  private recentMessageCache = new Map<string, number>();
 
   constructor() {
     this.userRepo = AppDataSource.getRepository(User);
@@ -105,6 +107,10 @@ export class MessageRouter {
   }
 
   async handleIncomingMessage(bbMessage: BlueBubblesMessage): Promise<void> {
+    let user: User | null = null;
+    let conversation: Conversation | null = null;
+    let chatGuid: string | null = null;
+
     try {
       logInfo('Processing incoming message', {
         guid: bbMessage.guid,
@@ -119,7 +125,11 @@ export class MessageRouter {
         return;
       }
 
-      // Process message through handler factory
+      if (this.isDuplicateMessage(bbMessage.guid)) {
+        logWarn('Duplicate BlueBubbles message detected - skipping processing', { guid: bbMessage.guid });
+        return;
+      }
+
       const processedMessage = await this.messageHandlerFactory.processMessage(bbMessage);
       if (!processedMessage) {
         logDebug('Message skipped by handlers (empty or unsupported type)');
@@ -127,7 +137,7 @@ export class MessageRouter {
       }
 
       // Get or create user based on chat identifier
-      const user = await this.getOrCreateUserFromMessage(bbMessage);
+      user = await this.getOrCreateUserFromMessage(bbMessage);
       if (!user) {
         logError('Failed to identify user from message');
         return;
@@ -137,7 +147,7 @@ export class MessageRouter {
       const userHandle = bbMessage.handle?.address || 'unknown';
 
       // Get or create conversation
-      const conversation = await this.getOrCreateConversation(
+      conversation = await this.getOrCreateConversation(
         user.id,
         'imessage',
         bbMessage.chat_id
@@ -159,7 +169,7 @@ export class MessageRouter {
       );
 
       // Get conversation history and trim with summarization if needed
-      const rawConversationHistory = await this.getConversationHistory(conversation.id, 50);
+      const rawConversationHistory = await this.getConversationHistory(conversation.id, 35);
       const conversationHistory = await this.prepareConversationHistory(
         user.id,
         conversation,
@@ -182,6 +192,8 @@ export class MessageRouter {
         toolContext
       );
 
+      chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
+
       if (aiResponse.success && aiResponse.data) {
         // Save AI response to database
         await this.saveMessage(
@@ -198,13 +210,10 @@ export class MessageRouter {
         );
 
         // Send response back through BlueBubbles
-        const chatGuid = bbMessage.chat_id || conversation.channelConversationId;
+        chatGuid = chatGuid ?? bbMessage.chat_id ?? conversation?.channelConversationId ?? null;
 
         if (chatGuid) {
-          await this.blueBubblesClient.sendMessage(
-            chatGuid,
-            aiResponse.data.content
-          );
+          await this.sendBlueBubblesMessage(chatGuid, aiResponse.data.content, 'assistant-response');
         } else {
           logError('No chat GUID available to send response', {
             conversationId: conversation.id,
@@ -218,27 +227,126 @@ export class MessageRouter {
         });
         
         // Send error message to user (only if we have chat_id)
-        if (bbMessage.chat_id) {
-          await this.blueBubblesClient.sendMessage(
-            bbMessage.chat_id,
-            "I'm having trouble processing your message right now. Please try again later."
-          );
+        if (chatGuid) {
+          await this.sendBlueBubblesMessage(chatGuid, "I'm having trouble processing your message right now. Please try again later.", 'error-response');
         }
       }
     } catch (error) {
       logError('Error handling incoming message', error);
       
       // Try to send error message if we have chat_id
-      if (bbMessage.chat_id) {
-        try {
-          await this.blueBubblesClient.sendMessage(
-            bbMessage.chat_id,
-            "I encountered an error processing your message. Please try again."
-          );
-        } catch (sendError) {
-          logError('Failed to send error message', sendError);
+      if (!chatGuid) {
+        if (!conversation || !user) {
+          const context = await this.ensureConversationContext(bbMessage);
+          conversation = context.conversation;
+          user = context.user;
+        }
+
+        if (conversation && user) {
+          chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
         }
       }
+
+      if (chatGuid) {
+        await this.sendBlueBubblesMessage(chatGuid, "I encountered an error processing your message. Please try again.", 'error-catch');
+      }
+    }
+  }
+
+  private async ensureConversationContext(bbMessage: BlueBubblesMessage): Promise<{ conversation: Conversation | null; user: User | null }> {
+    try {
+      const user = await this.getOrCreateUserFromMessage(bbMessage);
+      if (!user) {
+        return { conversation: null, user: null };
+      }
+
+      const conversation = await this.getOrCreateConversation(user.id, 'imessage', bbMessage.chat_id);
+      return { conversation, user };
+    } catch (error) {
+      logWarn('Failed to ensure conversation context after error', {
+        guid: bbMessage.guid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return { conversation: null, user: null };
+    }
+  }
+
+  private async resolveChatGuid(
+    conversation: Conversation,
+    bbMessage: BlueBubblesMessage,
+    user: User
+  ): Promise<string | null> {
+    let chatGuid = bbMessage.chat_id || conversation.channelConversationId;
+
+    if (chatGuid) {
+      return chatGuid;
+    }
+
+    const handleAddress = bbMessage.handle?.address || user.phoneNumber;
+    if (!handleAddress) {
+      return null;
+    }
+
+    try {
+      const resolvedGuid = await this.blueBubblesClient.findChatGuidByHandle(handleAddress);
+      if (resolvedGuid) {
+        if (conversation.channelConversationId !== resolvedGuid) {
+          try {
+            await this.conversationRepo.update(conversation.id, { channelConversationId: resolvedGuid } as any);
+            conversation.channelConversationId = resolvedGuid;
+          } catch (error) {
+            logWarn('Failed to persist resolved chat guid', {
+              conversationId: conversation.id,
+              error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+
+        return resolvedGuid;
+      }
+    } catch (error) {
+      logWarn('Unable to resolve chat guid from BlueBubbles', {
+        handleAddress,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    return null;
+  }
+
+  private isDuplicateMessage(guid?: string): boolean {
+    if (!guid) {
+      return false;
+    }
+
+    const now = Date.now();
+
+    for (const [storedGuid, timestamp] of this.recentMessageCache) {
+      if (now - timestamp > this.duplicateWindowMs) {
+        this.recentMessageCache.delete(storedGuid);
+      }
+    }
+
+    const lastSeen = this.recentMessageCache.get(guid);
+    if (lastSeen && now - lastSeen < this.duplicateWindowMs) {
+      return true;
+    }
+
+    this.recentMessageCache.set(guid, now);
+    return false;
+  }
+
+  private async sendBlueBubblesMessage(chatGuid: string, text: string, context: string): Promise<void> {
+    if (!config.bluebubbles.sendEnabled) {
+      logWarn('BlueBubbles sending disabled via config - skipping outbound message', { chatGuid, context });
+      return;
+    }
+
+    try {
+      await this.blueBubblesClient.sendMessage(chatGuid, text);
+    } catch (error) {
+      logError('Failed to send BlueBubbles message', error, { chatGuid, context });
+      throw error;
     }
   }
 

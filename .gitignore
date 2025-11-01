@@ -69,3 +69,5 @@ agent-service/dist/
 *.p12
 service-account.json
 google-credentials.json
+client_secret_*.json
+.local-secrets/

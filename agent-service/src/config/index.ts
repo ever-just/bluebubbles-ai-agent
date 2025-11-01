@@ -42,7 +42,8 @@ export const config: AppConfig = {
     url: process.env.BLUEBUBBLES_URL!,
     password: process.env.BLUEBUBBLES_PASSWORD!,
     pollInterval: parseInt(process.env.BLUEBUBBLES_POLL_INTERVAL || '5000', 10),
-    timeout: parseInt(process.env.BLUEBUBBLES_TIMEOUT || '30000', 10)
+    timeout: parseInt(process.env.BLUEBUBBLES_TIMEOUT || '30000', 10),
+    sendEnabled: process.env.BLUEBUBBLES_SEND_ENABLED !== 'false'
   },
   
   anthropic: {

@@ -231,6 +231,7 @@ export interface BlueBubblesConfig {
   password: string;
   pollInterval?: number;
   timeout?: number;
+  sendEnabled?: boolean;
 }
 
 export interface AnthropicConfig {
