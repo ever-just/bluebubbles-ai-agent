@@ -4,29 +4,53 @@ import { User } from '../database/entities/User';
 import { Conversation } from '../database/entities/Conversation';
 import { Message } from '../database/entities/Message';
 import { BlueBubblesClient } from '../integrations/BlueBubblesClient';
-import { ClaudeService, getClaudeService } from './ClaudeService';
+import { ClaudeServiceEnhanced, getEnhancedClaudeService } from './ClaudeServiceEnhanced';
 import { ContextService, getContextService } from './ContextService';
 import { ReminderService } from './ReminderService';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
-import { ServiceResponse, BlueBubblesMessage, ClaudeMessage } from '../types';
+import { ServiceResponse, BlueBubblesMessage, MessageMetadata } from '../types';
+import { getMessageHandlerFactory } from '../handlers/MessageHandlerFactory';
+import { getSecurityManager } from '../middleware/security';
+import { ToolExecutionContext } from '../tools/Tool';
+import { config } from '../config';
+import { getConversationSummarizer } from './ConversationSummarizer';
+import type { ConversationTurn } from './ConversationSummarizer';
 
 export class MessageRouter {
   private userRepo: Repository<User>;
   private conversationRepo: Repository<Conversation>;
   private messageRepo: Repository<Message>;
   private blueBubblesClient: BlueBubblesClient;
-  private claudeService: ClaudeService;
+  private claudeService: ClaudeServiceEnhanced;
   private contextService: ContextService;
   private reminderService: ReminderService;
+  private messageHandlerFactory = getMessageHandlerFactory();
+  private securityManager = getSecurityManager();
+  private conversationSummarizer = getConversationSummarizer();
+  private readonly summaryTailLength = 8;
 
   constructor() {
     this.userRepo = AppDataSource.getRepository(User);
     this.conversationRepo = AppDataSource.getRepository(Conversation);
     this.messageRepo = AppDataSource.getRepository(Message);
     this.blueBubblesClient = new BlueBubblesClient();
-    this.claudeService = getClaudeService();
+    this.claudeService = getEnhancedClaudeService();
     this.contextService = getContextService();
     this.reminderService = new ReminderService();
+  }
+
+  private estimateTokenUsage(history: Array<{ role: string; content: string }>, latestMessage?: string) {
+    const averageTokensPerChar = 0.25;
+    const historyLength = history.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
+    const latestLength = latestMessage?.length || 0;
+
+    const inputTokens = Math.ceil((historyLength + latestLength) * averageTokensPerChar);
+    const outputTokens = Math.ceil(800 * averageTokensPerChar);
+
+    return {
+      input: inputTokens,
+      output: outputTokens
+    };
   }
 
   async initialize(): Promise<void> {
@@ -86,13 +110,19 @@ export class MessageRouter {
         guid: bbMessage.guid,
         chat: bbMessage.chat_id,
         text: bbMessage.text?.substring(0, 50),
-        isFromMe: bbMessage.is_from_me,
-        fullMessage: JSON.stringify(bbMessage, null, 2)
+        isFromMe: bbMessage.is_from_me
       });
 
       // Skip if message is from the AI (sent by us)
       if (bbMessage.is_from_me) {
         logDebug('Skipping self-sent message');
+        return;
+      }
+
+      // Process message through handler factory
+      const processedMessage = await this.messageHandlerFactory.processMessage(bbMessage);
+      if (!processedMessage) {
+        logDebug('Message skipped by handlers (empty or unsupported type)');
         return;
       }
 
@@ -103,6 +133,9 @@ export class MessageRouter {
         return;
       }
 
+      // Get user handle for context
+      const userHandle = bbMessage.handle?.address || 'unknown';
+
       // Get or create conversation
       const conversation = await this.getOrCreateConversation(
         user.id,
@@ -111,35 +144,42 @@ export class MessageRouter {
       );
 
       // Save incoming message to database
-      const savedMessage = await this.saveMessage(
+      const messageText = processedMessage.text || '[Non-text content]';
+      await this.saveMessage(
         user.id,
         conversation.id,
         'user',
-        bbMessage.text,
+        messageText,
         {
           source: 'bluebubbles',
           originalMessageId: bbMessage.guid,
-          attachments: bbMessage.attachments
+          attachments: bbMessage.attachments,
+          messageType: processedMessage.metadata.originalType
         }
       );
 
-      // Build conversation context
-      const contextResult = await this.contextService.buildConversationContext(
+      // Get conversation history and trim with summarization if needed
+      const rawConversationHistory = await this.getConversationHistory(conversation.id, 50);
+      const conversationHistory = await this.prepareConversationHistory(
         user.id,
-        conversation.id,
-        20
+        conversation,
+        rawConversationHistory,
+        messageText
       );
 
-      // Check for action items (reminders, tasks, etc.)
-      await this.processActionItems(bbMessage.text, user.id);
+      // Create tool execution context
+      const toolContext: ToolExecutionContext = {
+        userHandle,
+        userId: user.id,
+        conversationId: conversation.id,
+        isAdmin: this.securityManager.isAdmin(userHandle)
+      };
 
-      // Prepare messages for Claude
-      const messages = await this.prepareClaudeMessages(conversation.id);
-      
-      // Get AI response
+      // Get AI response with tools and multi-modal support
       const aiResponse = await this.claudeService.sendMessage(
-        messages,
-        contextResult.data
+        [processedMessage],
+        conversationHistory,
+        toolContext
       );
 
       if (aiResponse.success && aiResponse.data) {
@@ -151,34 +191,171 @@ export class MessageRouter {
           aiResponse.data.content,
           {
             source: 'bluebubbles',
-            tokensUsed: aiResponse.data.tokensUsed
+            tokensUsed: aiResponse.data.tokensUsed,
+            inputTokens: aiResponse.data.metadata?.usage?.input_tokens,
+            toolsUsed: aiResponse.data.toolsUsed
           }
         );
 
         // Send response back through BlueBubbles
-        await this.blueBubblesClient.sendMessage(
-          bbMessage.chat_id,
-          aiResponse.data.content
-        );
+        const chatGuid = bbMessage.chat_id || conversation.channelConversationId;
 
-        // Update conversation context
-        await this.updateConversationContext(
-          user.id,
-          conversation.id,
-          bbMessage.text,
-          aiResponse.data.content
-        );
+        if (chatGuid) {
+          await this.blueBubblesClient.sendMessage(
+            chatGuid,
+            aiResponse.data.content
+          );
+        } else {
+          logError('No chat GUID available to send response', {
+            conversationId: conversation.id,
+            incomingChatId: bbMessage.chat_id
+          });
+        }
       } else {
-        logError('Failed to get AI response', { error: aiResponse.error });
+        logError('Failed to get AI response', { 
+          error: aiResponse.error,
+          errorDetails: JSON.stringify(aiResponse, null, 2)
+        });
         
-        // Send error message to user
-        await this.blueBubblesClient.sendMessage(
-          bbMessage.chat_id,
-          "I'm having trouble processing your message right now. Please try again later."
-        );
+        // Send error message to user (only if we have chat_id)
+        if (bbMessage.chat_id) {
+          await this.blueBubblesClient.sendMessage(
+            bbMessage.chat_id,
+            "I'm having trouble processing your message right now. Please try again later."
+          );
+        }
       }
     } catch (error) {
       logError('Error handling incoming message', error);
+      
+      // Try to send error message if we have chat_id
+      if (bbMessage.chat_id) {
+        try {
+          await this.blueBubblesClient.sendMessage(
+            bbMessage.chat_id,
+            "I encountered an error processing your message. Please try again."
+          );
+        } catch (sendError) {
+          logError('Failed to send error message', sendError);
+        }
+      }
+    }
+  }
+
+  private async prepareConversationHistory(
+    userId: string,
+    conversation: Conversation,
+    history: Array<{ role: string; content: string }>,
+    latestMessage?: string
+  ): Promise<Array<{ role: string; content: string }>> {
+    const summaryTrigger = config.anthropic.summaryTriggerTokens ?? Math.floor((config.anthropic.contextWindowTokens ?? 6000) * 0.7);
+    const contextWindow = config.anthropic.contextWindowTokens ?? summaryTrigger + 1000;
+    const { input: inputTokens } = this.estimateTokenUsage(history, latestMessage);
+
+    if (inputTokens <= summaryTrigger) {
+      return history;
+    }
+
+    const summarySourceCount = Math.max(history.length - this.summaryTailLength, 0);
+    if (summarySourceCount <= 0) {
+      return history;
+    }
+
+    const summarySource: ConversationTurn[] = history
+      .slice(0, summarySourceCount)
+      .filter(turn => turn.content && turn.content.trim().length > 0)
+      .map(turn => ({
+        role: turn.role === 'assistant' ? 'assistant' : 'user',
+        content: turn.content
+      }));
+
+    if (summarySource.length === 0) {
+      return history;
+    }
+
+    try {
+      const summary = await this.conversationSummarizer.summarize(summarySource);
+      if (!summary) {
+        return history;
+      }
+
+      const summaryMessage = {
+        role: 'assistant',
+        content: `Summary so far:\n${summary}`
+      };
+
+      const tailMessages = history.slice(-this.summaryTailLength);
+      const trimmedHistory = await this.enforceContextWindow(summaryMessage, tailMessages, latestMessage, contextWindow);
+
+      void this.persistConversationSummary(userId, conversation, summary);
+
+      return trimmedHistory;
+    } catch (error) {
+      logWarn('Failed to summarize conversation context', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return history;
+    }
+  }
+
+  private async enforceContextWindow(
+    summaryMessage: { role: string; content: string },
+    tailMessages: Array<{ role: string; content: string }>,
+    latestMessage: string | undefined,
+    contextWindow: number
+  ): Promise<Array<{ role: string; content: string }>> {
+    const mutableTail = [...tailMessages];
+    let candidateHistory = [summaryMessage, ...mutableTail];
+    let { input } = this.estimateTokenUsage(candidateHistory, latestMessage);
+
+    while (input > contextWindow && mutableTail.length > 1) {
+      mutableTail.shift();
+      candidateHistory = [summaryMessage, ...mutableTail];
+      ({ input } = this.estimateTokenUsage(candidateHistory, latestMessage));
+    }
+
+    return candidateHistory;
+  }
+
+  private async persistConversationSummary(
+    userId: string,
+    conversation: Conversation,
+    summary: string
+  ): Promise<void> {
+    try {
+      const memoryResult = await this.contextService.saveMemory(
+        userId,
+        'conversation_summary',
+        summary,
+        'session',
+        conversation.id,
+        {
+          generatedAt: new Date().toISOString()
+        }
+      );
+
+      if (!memoryResult.success) {
+        logWarn('Failed to save conversation summary memory', { error: memoryResult.error });
+      }
+    } catch (error) {
+      logWarn('Error saving conversation summary memory', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    try {
+      const metadata: Record<string, any> = {
+        ...(conversation.metadata || {}),
+        summary,
+        summaryGeneratedAt: new Date().toISOString()
+      };
+
+      await this.conversationRepo.update(conversation.id, { metadata } as any);
+      conversation.metadata = metadata;
+    } catch (error) {
+      logWarn('Error updating conversation metadata with summary', {
+        error: error instanceof Error ? error.message : String(error)
+      });
     }
   }
 
@@ -247,6 +424,11 @@ export class MessageRouter {
 
     // Update last message timestamp
     conversation.lastMessageAt = new Date();
+    // Backfill missing channel conversation id if known
+    if (!conversation.channelConversationId && channelConversationId) {
+      conversation.channelConversationId = channelConversationId;
+    }
+
     await this.conversationRepo.save(conversation);
 
     return conversation;
@@ -257,7 +439,7 @@ export class MessageRouter {
     conversationId: string,
     role: 'user' | 'assistant',
     content: string,
-    metadata: any = {}
+    metadata: MessageMetadata = {}
   ): Promise<Message> {
     const message = this.messageRepo.create({
       userId,
@@ -274,12 +456,11 @@ export class MessageRouter {
     return savedMessage;
   }
 
-  private async prepareClaudeMessages(conversationId: string): Promise<ClaudeMessage[]> {
-    // Get recent messages from this conversation
+  private async getConversationHistory(conversationId: string, limit: number = 20): Promise<Array<{role: string; content: string}>> {
     const messages = await this.messageRepo.find({
       where: { conversationId },
       order: { createdAt: 'ASC' },
-      take: 20 // Last 20 messages for context
+      take: limit
     });
 
     return messages.map(msg => ({
@@ -288,84 +469,7 @@ export class MessageRouter {
     }));
   }
 
-  private async processActionItems(text: string, userId: string): Promise<void> {
-    try {
-      // Extract potential action items from the message
-      const actionResult = await this.claudeService.extractActionItems(text);
-      
-      if (actionResult.success && actionResult.data && actionResult.data.length > 0) {
-        for (const item of actionResult.data) {
-          // Check if it's a reminder request
-          if (item.toLowerCase().includes('remind') || item.toLowerCase().includes('reminder')) {
-            await this.reminderService.createReminderFromText(userId, item, 'imessage');
-            logInfo('Created reminder from message', { userId, reminder: item });
-          }
-        }
-      }
-    } catch (error) {
-      logError('Failed to process action items', error);
-    }
-  }
-
-  private async updateConversationContext(
-    userId: string,
-    conversationId: string,
-    userMessage: string,
-    aiResponse: string
-  ): Promise<void> {
-    try {
-      // Save the last user intent as working memory
-      await this.contextService.saveMemory(
-        userId,
-        'last_user_message',
-        userMessage,
-        'working',
-        conversationId
-      );
-
-      // Save the last AI response as working memory
-      await this.contextService.saveMemory(
-        userId,
-        'last_ai_response',
-        aiResponse,
-        'working',
-        conversationId
-      );
-
-      // Extract and save any important information as session memory
-      if (userMessage.toLowerCase().includes('my name is')) {
-        const nameMatch = userMessage.match(/my name is (\w+)/i);
-        if (nameMatch) {
-          await this.contextService.saveMemory(
-            userId,
-            'user_name',
-            nameMatch[1],
-            'long_term'
-          );
-        }
-      }
-
-      // Save topic if it seems important
-      if (userMessage.length > 50) {
-        const summaryResult = await this.claudeService.summarizeConversation([
-          { role: 'user', content: userMessage },
-          { role: 'assistant', content: aiResponse }
-        ]);
-        
-        if (summaryResult.success && summaryResult.data) {
-          await this.contextService.saveMemory(
-            userId,
-            `topic_${Date.now()}`,
-            summaryResult.data,
-            'session',
-            conversationId
-          );
-        }
-      }
-    } catch (error) {
-      logError('Failed to update conversation context', error);
-    }
-  }
+  // Note: Old methods removed - action items and context are now handled by tools and Claude directly
 
   async sendProactiveMessage(
     userId: string,

@@ -45,7 +45,7 @@ export interface Message {
 export interface MessageMetadata {
   source?: 'bluebubbles' | 'gmail' | 'system';
   originalMessageId?: string;
-  attachments?: Attachment[];
+  attachments?: Attachment[] | BlueBubblesAttachment[];
   isGroupChat?: boolean;
   chatParticipants?: string[];
   [key: string]: any;
@@ -151,6 +151,9 @@ export interface ClaudeContext {
   systemPrompt?: string;
   temperature?: number;
   maxTokens?: number;
+  priority?: number;
+  estimatedTokens?: number;
+  tags?: string[];
 }
 
 export interface ClaudeResponse {
@@ -235,6 +238,13 @@ export interface AnthropicConfig {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  requestLimitPerMinute?: number;
+  inputTokenLimitPerMinute?: number;
+  outputTokenLimitPerMinute?: number;
+  maxConcurrentRequests?: number;
+  summaryTriggerTokens?: number;
+  contextWindowTokens?: number;
+  responseMaxTokens?: number;
 }
 
 export interface LoggingConfig {

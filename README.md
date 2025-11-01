@@ -1,349 +1,168 @@
-# BlueBubbles AI Agent
+# TEXTMYAGENT
 
-> **Status**: ✅ **FULLY IMPLEMENTED & PRODUCTION-READY**
+> **Mission:** Let anyone talk to an AI assistant over iMessage (or any texting app backed by BlueBubbles) without opening a browser or installing a new app.
 
-An intelligent AI assistant that integrates with iMessage through BlueBubbles, powered by Claude 3 Opus, with persistent context memory and proactive messaging capabilities.
+TEXTMYAGENT turns everyday texting into an interface for a Claude-powered executive assistant. The service listens for inbound SMS/iMessage traffic through BlueBubbles, enriches conversations with long-term memory, and replies in real time while observing usage, rate limits, and context budgets.
 
-## 🎯 What's Been Built
+## 🌟 Why This Exists
 
-This is a **complete, working system** - not a research project. All core features are implemented and tested:
+People already live in their messaging apps. TEXTMYAGENT keeps the AI assistant there, so users can:
 
-### ✅ Completed Features
-- **Real-time iMessage Integration** - Socket.io connection to BlueBubbles Server
-- **AI-Powered Responses** - Claude 3 Opus with streaming support
-- **Three-Tier Memory System** - Working, session, and long-term context persistence
-- **Natural Language Reminders** - Parse and schedule reminders with Bull queue
-- **Proactive Messaging** - Send scheduled messages and notifications
-- **RESTful API** - Full CRUD operations for conversations, messages, reminders
-- **Database Layer** - PostgreSQL with TypeORM entities
-- **Redis Caching** - Fast context retrieval and job queuing
-- **Docker Setup** - Containerized PostgreSQL and Redis
-- **Graceful Shutdown** - Proper cleanup of connections and resources
+1. Text the agent from their phone or laptop using native Messages or any BlueBubbles-compatible client.
+2. Get intelligent, context-aware responses powered by Anthropic Claude.
+3. Capture reminders, summaries, and follow-ups without switching tools.
 
-## 📁 Project Structure
+The platform is built for founders and operators who want a dependable AI teammate that fits existing communication workflows.
+
+## 🧠 Core Feature Set
+
+| Capability | Description |
+| --- | --- |
+| **Text-based interface** | Two-way messaging over iMessage/SMS via BlueBubbles. |
+| **Anthropic request manager** | Shared priority queue with rate limiting, backoff, and usage logging. |
+| **Conversation memory** | Multi-layer memory (working/session/long-term) with automatic summarization to stay within token budgets. |
+| **Tool execution** | Weather, reminders, email, calendar hooks, and easy extension points for more tools. |
+| **Usage observability** | Structured logging, token accounting, and alerts when Anthropic quotas throttle traffic. |
+| **Reminders & proactive outreach** | Natural language reminder parsing with reliable delivery through iMessage. |
+| **Health monitoring** | Database/BlueBubbles readiness checks and graceful restarts. |
+
+## 🏗️ Architecture Overview
 
 ```
-/bluebubbles-ai-agent/
-├── agent-service/              # Main application (IMPLEMENTED)
-│   ├── src/
-│   │   ├── config/            # Configuration management
-│   │   ├── database/          # TypeORM entities & connection
-│   │   ├── integrations/      # BlueBubblesClient (Socket.io)
-│   │   ├── services/          # Core business logic
-│   │   │   ├── ClaudeService.ts      # AI integration
-│   │   │   ├── ContextService.ts     # Memory management
-│   │   │   ├── MessageRouter.ts      # Message handling
-│   │   │   └── ReminderService.ts    # Scheduled tasks
-│   │   ├── types/             # TypeScript definitions
-│   │   ├── utils/             # Logger & utilities
-│   │   └── index.ts           # Express server entry point
-│   ├── docker-compose.yml     # PostgreSQL + Redis setup
-│   ├── init.sql               # Database schema
-│   ├── .env.example           # Environment template
-│   └── package.json           # Dependencies
-├── bluebubbles-app/           # Flutter mobile app (included)
-├── bluebubbles-server/        # Node.js server (included)
-├── architecture/              # Design documentation
-├── deployment/                # Deployment guides
-└── findings/                  # Research notes
+TEXTMYAGENT
+├── agent-service/                 # Node/TypeScript core
+│   ├── src/config                 # Runtime configuration
+│   ├── src/database               # TypeORM entities & migrations
+│   ├── src/integrations           # BlueBubbles client, external APIs
+│   ├── src/services               # Core orchestrators (Claude, context, reminders, notifications)
+│   ├── src/tools                  # Tool registry & implementations
+│   ├── src/utils                  # Logging, metrics, helpers
+│   └── src/index.ts               # Express bootstrap & health endpoints
+├── bluebubbles-app/               # Upstream BlueBubbles Flutter app (reference)
+├── bluebubbles-server/            # BlueBubbles server fork for local/dev usage
+├── architecture/                  # High-level design docs
+├── deployment/                    # Deploy + infra runbooks
+└── findings/                      # Research notes and integration analysis
 ```
 
-## 🏗️ System Architecture
+Key services inside `agent-service`:
 
-### Implemented Components
+- **MessageRouter** – cleans inbound messages, assembles context (with summarization), coordinates Claude calls, and dispatches replies.
+- **ClaudeServiceEnhanced** – wraps Anthropic Claude with streaming, tool loops, and the centralized request manager.
+- **AnthropicRequestManager** – enforces rate limits, retry/backoff, and notifies admins if API quotas are exhausted.
+- **ConversationSummarizer** – compresses history when token usage approaches configurable thresholds.
+- **NotificationService** – escalates critical events (e.g., repeated 429s) via iMessage to admin phones.
+- **ReminderService** – natural language parsing + Bull queue to deliver proactive messages.
 
-**1. BlueBubblesClient** (`src/integrations/BlueBubblesClient.ts`)
-- Socket.io real-time connection to BlueBubbles Server
-- Automatic reconnection with exponential backoff
-- Message sending and receiving
-- Typing indicators and read receipts
-
-**2. ClaudeService** (`src/services/ClaudeService.ts`)
-- Anthropic API integration with Claude 3 Opus
-- Streaming response support
-- Action extraction from AI responses
-- Error handling and retry logic
-
-**3. ContextService** (`src/services/ContextService.ts`)
-- **Working Memory**: Current conversation context
-- **Session Memory**: Recent conversation history (24h)
-- **Long-term Memory**: Important facts and preferences
-- Automatic context pruning and token management
-- Vector embeddings for semantic search (ready for implementation)
-
-**4. MessageRouter** (`src/services/MessageRouter.ts`)
-- Incoming message processing
-- Conversation management
-- Context assembly and AI invocation
-- Response delivery
-- Action execution (reminders, etc.)
-
-**5. ReminderService** (`src/services/ReminderService.ts`)
-- Natural language parsing with chrono-node
-- Bull queue for reliable scheduling
-- Proactive message delivery
-- Recurring reminder support
-
-**6. Express API Server** (`src/index.ts`)
-- RESTful endpoints for all entities
-- Health checks and status monitoring
-- Webhook support for external integrations
-- Graceful shutdown handling
-
-## 🚀 Quick Start - Running the System
+## 🚀 Getting Started
 
 ### Prerequisites
-- **macOS** with iMessage configured
-- **Node.js** v18+ installed
-- **Docker Desktop** running
-- **Anthropic API Key** from https://console.anthropic.com/
-- **BlueBubbles Server** configured and running
 
-### Installation Steps
+- macOS host with iMessage signed in (required by BlueBubbles).
+- Node.js 18+.
+- Docker Desktop (for Postgres & Redis in development).
+- Anthropic API key with Claude 3 access.
+- Running BlueBubbles server.
 
-**1. Clone the Repository**
+### Setup
+
 ```bash
 git clone https://github.com/ever-just/bluebubbles-ai-agent.git
 cd bluebubbles-ai-agent/agent-service
-```
 
-**2. Install Dependencies**
-```bash
 npm install
-```
-
-**3. Configure Environment**
-```bash
 cp .env.example .env
-# Edit .env and add your credentials:
-nano .env
 ```
 
-Required environment variables:
-```env
-# Anthropic AI
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
+Update `.env` with:
 
-# BlueBubbles
-BLUEBUBBLES_URL=http://localhost:1234  # Your BlueBubbles server URL
-BLUEBUBBLES_PASSWORD=your_bluebubbles_password
+- `ANTHROPIC_API_KEY` – Claude credential.
+- `BLUEBUBBLES_URL` and `BLUEBUBBLES_PASSWORD` – connection to your BlueBubbles instance.
+- `DATABASE_URL`, `REDIS_URL`, `ENCRYPTION_KEY`, `SESSION_SECRET` – persistence and security settings.
 
-# Database
-DATABASE_HOST=localhost
-DATABASE_PORT=5432
-DATABASE_NAME=bluebubbles_ai
-DATABASE_USER=postgres
-DATABASE_PASSWORD=postgres
+Then start dependencies and the service:
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# Server
-PORT=3000
-NODE_ENV=development
-```
-
-**4. Start Docker Services**
 ```bash
-# Start PostgreSQL and Redis
 docker-compose up -d postgres redis
-
-# Verify they're running
-docker-compose ps
-```
-
-**5. Run the Application**
-```bash
-# Development mode with auto-reload
 npm run dev
-
-# Production mode
-npm run build
-npm start
+# or npm run build && npm start for production mode
 ```
 
-### Verification
+Successful startup shows logs confirming database, Redis, and BlueBubbles connections plus the Express server on port 3000.
 
-The server should start and show:
-```
-✓ Database connected
-✓ Redis connected
-✓ BlueBubbles client connected
-✓ Server running on port 3000
-```
+## 🧾 Usage Flow
 
-Test the API:
-```bash
-curl http://localhost:3000/health
-```
+1. **Inbound message** reaches BlueBubbles → forwarded to TEXTMYAGENT.
+2. **MessageRouter** persists the user message, builds context (summary + recent tail), and requests a Claude completion.
+3. **AnthropicRequestManager** schedules the request respecting concurrency/token quotas, adding retries on 429 responses.
+4. **ClaudeServiceEnhanced** executes tool calls if needed, collapses tool responses back into the chat, and returns a final message capped by `ANTHROPIC_RESPONSE_MAX_TOKENS`.
+5. **BlueBubblesClient** sends the reply over iMessage/SMS.
+6. **Notifications** fire if requests exhaust retries or other critical errors occur.
 
-### Technology Stack (Implemented)
-- **Language**: TypeScript/Node.js
-- **AI**: Anthropic Claude 3 Opus
-- **Database**: PostgreSQL with TypeORM
-- **Cache/Queue**: Redis + Bull
-- **Real-time**: Socket.io (BlueBubbles)
-- **API**: Express.js
-- **Parsing**: chrono-node (natural language dates)
+## ⚙️ Configuration Highlights
 
-## 📊 Database Schema
+Environment variables (see `.env.example` for defaults):
 
-The system uses 7 TypeORM entities:
+| Key | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Claude authentication |
+| `ANTHROPIC_MODEL` | Claude model (defaults to `claude-3-haiku-20240307`) |
+| `ANTHROPIC_RESPONSE_MAX_TOKENS` | Hard cap on response token budget to control costs |
+| `ANTHROPIC_MAX_CONCURRENT_REQUESTS` | Queue concurrency |
+| `ANTHROPIC_SUMMARY_TRIGGER_TOKENS` | When to summarize conversation history |
+| `BLUEBUBBLES_URL` / `BLUEBUBBLES_PASSWORD` | Messaging transport |
+| `DATABASE_URL`, `REDIS_URL` | Persistence and job queue |
+| `ENCRYPTION_KEY`, `SESSION_SECRET` | Secure storage and sessions |
 
-1. **User** - User accounts and preferences
-2. **Conversation** - Chat threads with metadata
-3. **Message** - Individual messages with AI responses
-4. **ContextMemory** - Three-tier memory system
-5. **Reminder** - Scheduled proactive messages
-6. **CalendarEvent** - Calendar integration (ready for implementation)
-7. **OAuthToken** - OAuth tokens (ready for Google integration)
+## 📡 Features in Detail
 
-Schema is automatically created from `init.sql` on first run.
+### Conversation Intelligence
+- **Automated summarization** keeps context manageable by trimming older turns and persisting a session memory snippet.
+- **Token estimation & budgeting** guard against runaway Anthropic usage, especially on long chats.
 
-## 🔌 API Endpoints
+### Reliability & Observability
+- **Structured logging** with per-request metadata (tokens, queue length, retries) for debugging and cost tracking.
+- **Admin alerts** sent via iMessage when Claude rate limits persist after retries.
+- **Retry-after handling** respects Anthropic headers for smoother backoff.
 
-### Health & Status
-- `GET /health` - Server health check
-- `GET /status` - Detailed system status
+### Extensibility
+- Tool framework supports custom actions (e.g., CRM lookups, ticket creation).
+- Reminder and notification pipelines can be extended to other channels (email, push) with minimal changes.
 
-### Conversations
-- `GET /conversations` - List all conversations
-- `GET /conversations/:id` - Get conversation details
-- `POST /conversations` - Create new conversation
-- `PUT /conversations/:id` - Update conversation
-- `DELETE /conversations/:id` - Delete conversation
+## 🛣️ Roadmap Ideas
 
-### Messages
-- `GET /messages` - List all messages
-- `GET /messages/:id` - Get message details
-- `POST /messages` - Send new message
-- `GET /conversations/:id/messages` - Get conversation messages
+- **Additional channels**: plug in WhatsApp, Telegram, Slack using similar transport bridges.
+- **Knowledge retrieval**: vector search or RAG for richer answers.
+- **User management**: multi-tenant controls, per-user memories, and billing hooks.
+- **Analytics dashboard**: visualize usage, latency, and reminders in a web UI.
+- **Automated tests**: expand integration coverage for BlueBubbles interactions.
 
-### Reminders
-- `GET /reminders` - List all reminders
-- `GET /reminders/:id` - Get reminder details
-- `POST /reminders` - Create reminder
-- `PUT /reminders/:id` - Update reminder
-- `DELETE /reminders/:id` - Delete reminder
+## 📚 Supporting Docs
 
-### Context Memory
-- `GET /context/:conversationId` - Get conversation context
-- `POST /context` - Add context memory
-- `DELETE /context/:id` - Delete context memory
+- `architecture/system-design.md` – in-depth diagrams and flow explanations.
+- `deployment/` – scripts and runbooks for DigitalOcean and other infrastructure.
+- `findings/` – research notes on integrations (Anthropic, Claude SDK, etc.).
+- `MIGRATION-GUIDE.md` / `SETUP-CHECKLIST.md` – operational handoff references.
 
-## 🎯 What's Working Right Now
+## 🔒 Security Practices
 
-✅ **Send a message via iMessage** → AI responds with context awareness  
-✅ **Set a reminder** → "Remind me to call mom tomorrow at 3pm"  
-✅ **Maintain context** → AI remembers previous conversation  
-✅ **Proactive messaging** → Scheduled reminders are delivered  
-✅ **API access** → Full CRUD operations via REST  
-✅ **Graceful shutdown** → Clean resource cleanup  
-
-## 🚧 Future Enhancements (Not Yet Implemented)
-
-- ❌ **Gmail Integration** - Email channel support
-- ❌ **Google Calendar** - Calendar event management
-- ❌ **OAuth Flow** - Google authentication
-- ❌ **Vector Embeddings** - Semantic memory search
-- ❌ **Multi-user Support** - User authentication system
-- ❌ **Web Dashboard** - Admin UI for monitoring
-
-## 🔧 Development & Deployment
-
-### Local Development
-```bash
-# Watch mode with auto-reload
-npm run dev
-
-# Check logs
-docker-compose logs -f postgres redis
-
-# Database migrations (if needed)
-npm run migration:run
-```
-
-### Production Deployment
-
-The system is ready for deployment to:
-- **DigitalOcean Droplet** (recommended)
-- **AWS EC2**
-- **Any VPS with Docker support**
-
-See `deployment/` folder for detailed guides.
-
-### Environment Variables
-
-Critical variables to set:
-- `ANTHROPIC_API_KEY` - Your Claude API key
-- `BLUEBUBBLES_URL` - BlueBubbles server endpoint
-- `BLUEBUBBLES_PASSWORD` - BlueBubbles auth password
-- `DATABASE_*` - PostgreSQL connection details
-- `REDIS_*` - Redis connection details
-
-## 💰 Estimated Operating Costs
-
-### Monthly (Production)
-- **Claude API**: $50-200 (depends on usage)
-- **DigitalOcean Droplet**: $12-24 (2-4GB RAM)
-- **Managed PostgreSQL**: $15 (optional, can use Docker)
-- **Managed Redis**: $10 (optional, can use Docker)
-- **Total**: ~$87-250/month
-
-### Development (Local)
-- **Free** - Everything runs locally via Docker
-
-## 📚 Additional Documentation
-
-### Setup & Migration
-- **`MIGRATION-GUIDE.md`** - Complete guide for moving to a new Mac (Mac Mini setup)
-- **`SETUP-CHECKLIST.md`** - Quick checklist for new Mac installation
-- `QUICK-START.md` - Condensed setup guide
-
-### Architecture & Deployment
-- `architecture/system-design.md` - Detailed architecture
-- `deployment/digitalocean-setup.md` - Cloud deployment guide
-- `deployment/quick-deploy.sh` - Automated deployment script
-
-### Research & Analysis
-- `findings/` - Research notes and integration analysis
-- `PROJECT-STRUCTURE.md` - Repository organization
-- `COMPLEXITY-ANALYSIS.md` - Technical complexity breakdown
-
-## 🔒 Security Notes
-
-- Environment variables contain sensitive keys - never commit `.env`
-- PostgreSQL and Redis should be firewalled in production
-- Consider using managed database services for production
-- BlueBubbles password should be strong and unique
-- API endpoints should be rate-limited in production
+- `.env` is ignored by Git – keep API keys out of version control.
+- Restrict database/Redis ports in production or use managed services.
+- Rotate Claude and BlueBubbles credentials periodically.
+- Enable rate limiting or auth for public-facing endpoints if exposing beyond trusted networks.
 
 ## 📝 License
 
-MIT License - See LICENSE file for details
+MIT License – see `LICENSE` for details.
 
-## 🙏 Acknowledgments
+## 🙌 Credits
 
-Built with:
-- [BlueBubbles](https://bluebubbles.app/) - iMessage integration
-- [Anthropic Claude](https://www.anthropic.com/) - AI capabilities
-- [TypeORM](https://typeorm.io/) - Database ORM
-- [Bull](https://github.com/OptimalBits/bull) - Job queue
-
-## ✨ Summary
-
-This is a **fully functional, production-ready** AI assistant that:
-- ✅ **Integrates with iMessage** via BlueBubbles
-- ✅ **Maintains conversation context** across sessions
-- ✅ **Schedules proactive reminders** with natural language
-- ✅ **Provides RESTful API** for external integrations
-- ✅ **Runs reliably** with Docker containerization
-
-**The system is ready to deploy and use!** 🚀
+- [BlueBubbles](https://bluebubbles.app/) for the macOS-to-messaging bridge.
+- [Anthropic Claude](https://www.anthropic.com/) for conversational intelligence.
+- [TypeORM](https://typeorm.io/), [Bull](https://github.com/OptimalBits/bull), and the broader OSS ecosystem powering the stack.
 
 ---
 
-**Repository**: https://github.com/ever-just/bluebubbles-ai-agent  
-**Status**: Production-Ready  
-**Last Updated**: October 2024
+**Repository:** https://github.com/ever-just/bluebubbles-ai-agent  
+**Project Name:** TEXTMYAGENT  
+**Last Updated:** November 2025

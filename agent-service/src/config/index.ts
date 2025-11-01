@@ -49,7 +49,14 @@ export const config: AppConfig = {
     apiKey: process.env.ANTHROPIC_API_KEY!,
     model: process.env.ANTHROPIC_MODEL || 'claude-3-opus-20240229',
     maxTokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS || '4096', 10),
-    temperature: parseFloat(process.env.ANTHROPIC_TEMPERATURE || '0.7')
+    temperature: parseFloat(process.env.ANTHROPIC_TEMPERATURE || '0.7'),
+    requestLimitPerMinute: parseInt(process.env.ANTHROPIC_REQUESTS_PER_MINUTE || '50', 10),
+    inputTokenLimitPerMinute: parseInt(process.env.ANTHROPIC_INPUT_TOKENS_PER_MINUTE || '50000', 10),
+    outputTokenLimitPerMinute: parseInt(process.env.ANTHROPIC_OUTPUT_TOKENS_PER_MINUTE || '10000', 10),
+    maxConcurrentRequests: parseInt(process.env.ANTHROPIC_MAX_CONCURRENT_REQUESTS || '2', 10),
+    summaryTriggerTokens: parseInt(process.env.ANTHROPIC_SUMMARY_TRIGGER_TOKENS || '4000', 10),
+    contextWindowTokens: parseInt(process.env.ANTHROPIC_CONTEXT_WINDOW_TOKENS || '6000', 10),
+    responseMaxTokens: parseInt(process.env.ANTHROPIC_RESPONSE_MAX_TOKENS || '600', 10)
   },
   
   logging: {

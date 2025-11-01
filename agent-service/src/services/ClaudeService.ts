@@ -8,6 +8,8 @@ export class ClaudeService {
   private model: string;
   private maxTokens: number;
   private temperature: number;
+  private maxRetries: number = 3;
+  private baseDelay: number = 1000; // 1 second
   
   constructor() {
     this.anthropic = new Anthropic({
@@ -23,10 +25,20 @@ export class ClaudeService {
     systemPrompt?: string,
     options?: Partial<ClaudeContext>
   ): Promise<ServiceResponse<ClaudeResponse>> {
+    return this.sendMessageWithRetry(messages, systemPrompt, options, 0);
+  }
+
+  private async sendMessageWithRetry(
+    messages: ClaudeMessage[],
+    systemPrompt?: string,
+    options?: Partial<ClaudeContext>,
+    retryCount: number = 0
+  ): Promise<ServiceResponse<ClaudeResponse>> {
     try {
       logDebug('Sending message to Claude', { 
         messageCount: messages.length,
-        model: this.model 
+        model: this.model,
+        retryCount
       });
 
       const response = await this.anthropic.messages.create({
@@ -61,12 +73,29 @@ export class ClaudeService {
         data: result
       };
     } catch (error: any) {
+      // Check if it's a rate limit error (429)
+      const isRateLimitError = error.status === 429 || 
+                               error.message?.includes('rate_limit_error') ||
+                               error.message?.includes('429');
+      
+      if (isRateLimitError && retryCount < this.maxRetries) {
+        const delay = this.baseDelay * Math.pow(2, retryCount);
+        logInfo(`Rate limit hit, retrying in ${delay}ms (attempt ${retryCount + 1}/${this.maxRetries})`);
+        
+        await this.sleep(delay);
+        return this.sendMessageWithRetry(messages, systemPrompt, options, retryCount + 1);
+      }
+
       logError('Failed to get Claude response', error);
       return {
         success: false,
         error: error.message || 'Failed to get response from Claude'
       };
     }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async streamMessage(
