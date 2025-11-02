@@ -14,7 +14,7 @@ class ConversationSummarizer {
   private readonly requestManager = getAnthropicRequestManager();
   private readonly maxSummaryTokens = Math.min(512, config.anthropic.maxTokens || 1024);
   private readonly summarySystemPrompt = 'You are an expert note taker. Summarize the conversation succinctly, capturing key topics, decisions, and action items.';
-  private readonly model = config.anthropic.model || 'claude-3-haiku-20240307';
+  private readonly model = config.anthropic.model || 'claude-3-5-haiku-latest';
 
   constructor() {
     this.anthropic = new Anthropic({

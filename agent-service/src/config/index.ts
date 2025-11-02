@@ -23,6 +23,24 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+const parseBoolean = (value: string | undefined, defaultValue: boolean): boolean => {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (['true', '1', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+
+  if (['false', '0', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
+};
+
 export const config: AppConfig = {
   port: parseInt(process.env.PORT || '3000', 10),
   environment: (process.env.NODE_ENV || 'development') as 'development' | 'production' | 'test',
@@ -48,7 +66,7 @@ export const config: AppConfig = {
   
   anthropic: {
     apiKey: process.env.ANTHROPIC_API_KEY!,
-    model: process.env.ANTHROPIC_MODEL || 'claude-3-opus-20240229',
+    model: process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest',
     maxTokens: parseInt(process.env.ANTHROPIC_MAX_TOKENS || '4096', 10),
     temperature: parseFloat(process.env.ANTHROPIC_TEMPERATURE || '0.7'),
     requestLimitPerMinute: parseInt(process.env.ANTHROPIC_REQUESTS_PER_MINUTE || '50', 10),
@@ -57,7 +75,12 @@ export const config: AppConfig = {
     maxConcurrentRequests: parseInt(process.env.ANTHROPIC_MAX_CONCURRENT_REQUESTS || '2', 10),
     summaryTriggerTokens: parseInt(process.env.ANTHROPIC_SUMMARY_TRIGGER_TOKENS || '4000', 10),
     contextWindowTokens: parseInt(process.env.ANTHROPIC_CONTEXT_WINDOW_TOKENS || '6000', 10),
-    responseMaxTokens: parseInt(process.env.ANTHROPIC_RESPONSE_MAX_TOKENS || '600', 10)
+    responseMaxTokens: parseInt(process.env.ANTHROPIC_RESPONSE_MAX_TOKENS || '600', 10),
+    enableWebSearch: parseBoolean(process.env.ANTHROPIC_ENABLE_WEB_SEARCH, true),
+    webSearchMaxUses: parseInt(process.env.ANTHROPIC_WEB_SEARCH_MAX_USES || '5', 10),
+    enableWebFetch: parseBoolean(process.env.ANTHROPIC_ENABLE_WEB_FETCH, false),
+    webFetchMaxUses: parseInt(process.env.ANTHROPIC_WEB_FETCH_MAX_USES || '3', 10),
+    webFetchBetaHeader: process.env.ANTHROPIC_WEB_FETCH_BETA_HEADER || 'web-fetch-2025-09-10'
   },
   
   logging: {

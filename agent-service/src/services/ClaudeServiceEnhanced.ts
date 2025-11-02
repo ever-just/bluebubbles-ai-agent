@@ -27,12 +27,21 @@ export class ClaudeServiceEnhanced {
   private requestManager = getAnthropicRequestManager();
   private maxRetries = 3;
   private baseRetryDelayMs = 1000;
+  private loggedWebSearchUnsupported = false;
+  private loggedWebFetchUnsupported = false;
   
   constructor() {
+    this.model = config.anthropic.model || 'claude-3-5-haiku-latest';
+
+    const defaultHeaders: Record<string, string> = {};
+    if (config.anthropic.enableWebFetch && this.supportsWebFetch()) {
+      defaultHeaders['anthropic-beta'] = config.anthropic.webFetchBetaHeader || 'web-fetch-2025-09-10';
+    }
+
     this.anthropic = new Anthropic({
-      apiKey: config.anthropic.apiKey
+      apiKey: config.anthropic.apiKey,
+      defaultHeaders: Object.keys(defaultHeaders).length > 0 ? defaultHeaders : undefined
     });
-    this.model = config.anthropic.model || 'claude-3-haiku-20240307';
     this.responseMaxTokens = config.anthropic.responseMaxTokens
       || config.anthropic.maxTokens
       || 600;
@@ -58,27 +67,30 @@ export class ClaudeServiceEnhanced {
       const messages = this.buildMessages(processedMessages, conversationHistory);
       
       // Get tool definitions (client tools)
-      const tools = this.toolRegistry.getToolDefinitions();
+      const toolDefinitions = this.toolRegistry.getToolDefinitions();
+      const serverTools = this.buildServerToolDefinitions();
+      const combinedTools = [...toolDefinitions, ...serverTools];
+      const toolsPayload = combinedTools.length > 0 ? (combinedTools as any) : undefined;
 
       const finalSystemPrompt = systemPrompt || this.buildAgentGracePrompt();
       
       logInfo('Tools available for Claude', {
-        toolCount: tools.length,
-        toolNames: tools.map(t => t.name)
+        toolCount: combinedTools.length,
+        toolNames: combinedTools.map(t => t.name)
       });
       
       logInfo('System prompt preview', {
         promptStart: finalSystemPrompt.substring(0, 200)
       });
 
-      // Create Claude API request (web search not available for Haiku)
+      // Create Claude API request
       let response = await this.performAnthropicRequest(() => this.anthropic.messages.create({
         model: this.model,
         max_tokens: this.responseMaxTokens,
         temperature: this.temperature,
         system: finalSystemPrompt,
         messages,
-        tools: tools.length > 0 ? tools : undefined
+        tools: toolsPayload
       }), {
         description: 'claude-sendMessage',
         estimatedInputTokens: this.estimateInputTokens(messages),
@@ -126,7 +138,7 @@ export class ClaudeServiceEnhanced {
           temperature: this.temperature,
           system: systemPrompt || this.buildAgentGracePrompt(),
           messages,
-          tools: tools.length > 0 ? tools : undefined
+          tools: toolsPayload
         }), {
           description: 'claude-tool-followup',
           estimatedInputTokens: this.estimateInputTokens(messages),
@@ -342,6 +354,68 @@ export class ClaudeServiceEnhanced {
     }, 0);
 
     return Math.ceil(totalCharacters * averageTokensPerChar);
+  }
+
+  private buildServerToolDefinitions(): Array<{ type: string; name: string; max_uses?: number }> {
+    const tools: Array<{ type: string; name: string; max_uses?: number }> = [];
+
+    if (config.anthropic.enableWebSearch) {
+      if (this.supportsWebSearch()) {
+        tools.push({
+          type: 'web_search_20250305',
+          name: 'web_search',
+          max_uses: config.anthropic.webSearchMaxUses ?? 5
+        });
+      } else if (!this.loggedWebSearchUnsupported) {
+        logWarn('Configured for web search, but current model does not support Anthropic web_search tool', {
+          model: this.model
+        });
+        this.loggedWebSearchUnsupported = true;
+      }
+    }
+
+    if (config.anthropic.enableWebFetch) {
+      if (this.supportsWebFetch()) {
+        tools.push({
+          type: 'web_fetch_20250910',
+          name: 'web_fetch',
+          max_uses: config.anthropic.webFetchMaxUses ?? 3
+        });
+      } else if (!this.loggedWebFetchUnsupported) {
+        logWarn('Configured for web fetch, but current model does not support Anthropic web_fetch tool', {
+          model: this.model
+        });
+        this.loggedWebFetchUnsupported = true;
+      }
+    }
+
+    return tools;
+  }
+
+  private supportsWebSearch(): boolean {
+    const patterns = [
+      'claude-3-5-haiku',
+      'claude-haiku-4-5',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4',
+      'claude-3-7-sonnet',
+      'claude-opus-4-1',
+      'claude-opus-4'
+    ];
+    return patterns.some(pattern => this.model.includes(pattern));
+  }
+
+  private supportsWebFetch(): boolean {
+    const patterns = [
+      'claude-3-5-haiku',
+      'claude-haiku-4-5',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4',
+      'claude-3-7-sonnet',
+      'claude-opus-4-1',
+      'claude-opus-4'
+    ];
+    return patterns.some(pattern => this.model.includes(pattern));
   }
 
   private getRetryInfo(error: any): { shouldRetry: boolean; delayMs: number } {

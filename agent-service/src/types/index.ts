@@ -246,6 +246,11 @@ export interface AnthropicConfig {
   summaryTriggerTokens?: number;
   contextWindowTokens?: number;
   responseMaxTokens?: number;
+  enableWebSearch?: boolean;
+  webSearchMaxUses?: number;
+  enableWebFetch?: boolean;
+  webFetchMaxUses?: number;
+  webFetchBetaHeader?: string;
 }
 
 export interface LoggingConfig {

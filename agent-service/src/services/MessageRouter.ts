@@ -30,6 +30,9 @@ export class MessageRouter {
   private readonly summaryTailLength = 6;
   private readonly duplicateWindowMs = 60_000;
   private recentMessageCache = new Map<string, number>();
+  private recentOutboundMessages = new Map<string, { hash: string; timestamp: number }[]>();
+  private outboundMessageTtlMs = 2 * 60_000;
+  private blueBubblesPollingDisabled = false;
 
   constructor() {
     this.userRepo = AppDataSource.getRepository(User);
@@ -55,18 +58,76 @@ export class MessageRouter {
     };
   }
 
+  private recordOutboundMessage(conversationId: string, text: string): void {
+    const normalized = this.normalizeMessageText(text);
+    if (!normalized) {
+      return;
+    }
+
+    const existing = this.recentOutboundMessages.get(conversationId) ?? [];
+    const now = Date.now();
+    const filtered = existing.filter(entry => now - entry.timestamp < this.outboundMessageTtlMs);
+    filtered.push({ hash: normalized, timestamp: now });
+    this.recentOutboundMessages.set(conversationId, filtered);
+  }
+
+  private isRecentAssistantEcho(conversationId: string, bbMessage: BlueBubblesMessage, text?: string | null): boolean {
+    const hasHandle = Boolean(bbMessage.handle?.address || bbMessage.handle?.identifier || bbMessage.handle_id);
+    const normalized = this.normalizeMessageText(text ?? '');
+    if (!hasHandle) {
+      return true;
+    }
+
+    if (!normalized) {
+      return false;
+    }
+
+    const entries = this.recentOutboundMessages.get(conversationId);
+    if (!entries || entries.length === 0) {
+      return false;
+    }
+
+    const now = Date.now();
+    const remaining: { hash: string; timestamp: number }[] = [];
+    let matched = false;
+    for (const entry of entries) {
+      if (now - entry.timestamp >= this.outboundMessageTtlMs) {
+        continue;
+      }
+      if (!matched && entry.hash === normalized) {
+        matched = true;
+        continue;
+      }
+      remaining.push(entry);
+    }
+
+    if (remaining.length > 0) {
+      this.recentOutboundMessages.set(conversationId, remaining);
+    } else {
+      this.recentOutboundMessages.delete(conversationId);
+    }
+
+    return matched;
+  }
+
+  private normalizeMessageText(text: string): string {
+    return text.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
   async initialize(): Promise<void> {
     try {
       // Try to connect to BlueBubbles, but don't block server startup if it fails
       try {
         await this.blueBubblesClient.connect();
-        
+
         // Set up message listeners only if connected
         this.blueBubblesClient.on('message', async (message: BlueBubblesMessage) => {
           await this.handleIncomingMessage(message);
         });
       } catch (blueBubblesError) {
-        logWarn('BlueBubbles connection failed during startup - continuing with HTTP polling only', { error: (blueBubblesError as Error).message });
+        logWarn('BlueBubbles connection failed during startup - continuing with HTTP polling only', {
+          error: (blueBubblesError as Error).message
+        });
       }
 
       // Always start HTTP polling as backup
@@ -82,10 +143,17 @@ export class MessageRouter {
   private startMessagePolling(): void {
     // HTTP polling for new messages (works without Private API)
     setInterval(async () => {
+      if (this.blueBubblesPollingDisabled) {
+        return;
+      }
+
       console.log('🔄 HTTP POLLING: Checking BlueBubbles API availability...');
       try {
         // Test basic API connectivity
-        const serverResponse = await fetch(`http://localhost:1234/api/v1/server/info?password=bluebubbles123`);
+        const serverInfoUrl = new URL('/api/v1/server/info', config.bluebubbles.url.endsWith('/') ? config.bluebubbles.url : `${config.bluebubbles.url}/`);
+        serverInfoUrl.searchParams.set('password', config.bluebubbles.password);
+
+        const serverResponse = await fetch(serverInfoUrl.toString());
         if (serverResponse.ok) {
           const serverData = await serverResponse.json();
           console.log('🔄 HTTP POLLING: BlueBubbles API accessible');
@@ -95,10 +163,18 @@ export class MessageRouter {
           // or webhook injection when Private API compatibility is resolved
 
           console.log('🔄 HTTP POLLING: Ready for manual message injection');
+        } else if (serverResponse.status === 401) {
+          logError('BlueBubbles API authentication failed - disabling HTTP polling until credentials are corrected');
+          this.blueBubblesPollingDisabled = true;
         } else {
           console.log('🔄 HTTP POLLING: BlueBubbles API not accessible');
         }
       } catch (error) {
+        if ((error as Error)?.message?.includes('401')) {
+          logError('BlueBubbles API authentication failed - disabling HTTP polling until credentials are corrected', error);
+          this.blueBubblesPollingDisabled = true;
+          return;
+        }
         console.log('🔄 HTTP POLLING: Network error:', (error as Error).message);
       }
     }, 30000); // Check every 30 seconds
@@ -121,7 +197,7 @@ export class MessageRouter {
 
       // Skip if message is from the AI (sent by us)
       if (bbMessage.is_from_me) {
-        logDebug('Skipping self-sent message');
+        logDebug('Skipping self-sent message (flagged by BlueBubbles)');
         return;
       }
 
@@ -152,6 +228,14 @@ export class MessageRouter {
         'imessage',
         bbMessage.chat_id
       );
+
+      if (this.isRecentAssistantEcho(conversation.id, bbMessage, processedMessage.text)) {
+        logDebug('Skipping assistant echo detected via outbound cache', {
+          guid: bbMessage.guid,
+          conversationId: conversation.id
+        });
+        return;
+      }
 
       // Save incoming message to database
       const messageText = processedMessage.text || '[Non-text content]';
@@ -195,30 +279,40 @@ export class MessageRouter {
       chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
 
       if (aiResponse.success && aiResponse.data) {
-        // Save AI response to database
-        await this.saveMessage(
-          user.id,
-          conversation.id,
-          'assistant',
-          aiResponse.data.content,
-          {
-            source: 'bluebubbles',
-            tokensUsed: aiResponse.data.tokensUsed,
-            inputTokens: aiResponse.data.metadata?.usage?.input_tokens,
-            toolsUsed: aiResponse.data.toolsUsed
-          }
-        );
+        const sendEnabled = config.bluebubbles.sendEnabled;
 
-        // Send response back through BlueBubbles
-        chatGuid = chatGuid ?? bbMessage.chat_id ?? conversation?.channelConversationId ?? null;
-
-        if (chatGuid) {
-          await this.sendBlueBubblesMessage(chatGuid, aiResponse.data.content, 'assistant-response');
-        } else {
-          logError('No chat GUID available to send response', {
-            conversationId: conversation.id,
-            incomingChatId: bbMessage.chat_id
+        if (!sendEnabled) {
+          logWarn('Skipping assistant response because BlueBubbles sending is disabled', {
+            conversationId: conversation.id
           });
+        }
+
+        if (sendEnabled) {
+          // Save AI response to database only if we intend to send it back through BlueBubbles
+          await this.saveMessage(
+            user.id,
+            conversation.id,
+            'assistant',
+            aiResponse.data.content,
+            {
+              source: 'bluebubbles',
+              tokensUsed: aiResponse.data.tokensUsed,
+              inputTokens: aiResponse.data.metadata?.usage?.input_tokens,
+              toolsUsed: aiResponse.data.toolsUsed
+            }
+          );
+
+          // Send response back through BlueBubbles
+          chatGuid = chatGuid ?? bbMessage.chat_id ?? conversation?.channelConversationId ?? null;
+
+          if (chatGuid) {
+            await this.sendBlueBubblesMessage(chatGuid, aiResponse.data.content, 'assistant-response', conversation.id);
+          } else {
+            logError('No chat GUID available to send response', {
+              conversationId: conversation.id,
+              incomingChatId: bbMessage.chat_id
+            });
+          }
         }
       } else {
         logError('Failed to get AI response', { 
@@ -228,7 +322,7 @@ export class MessageRouter {
         
         // Send error message to user (only if we have chat_id)
         if (chatGuid) {
-          await this.sendBlueBubblesMessage(chatGuid, "I'm having trouble processing your message right now. Please try again later.", 'error-response');
+          await this.sendBlueBubblesMessage(chatGuid, "I'm having trouble processing your message right now. Please try again later.", 'error-response', conversation?.id);
         }
       }
     } catch (error) {
@@ -247,8 +341,8 @@ export class MessageRouter {
         }
       }
 
-      if (chatGuid) {
-        await this.sendBlueBubblesMessage(chatGuid, "I encountered an error processing your message. Please try again.", 'error-catch');
+      if (chatGuid && config.bluebubbles.sendEnabled) {
+        await this.sendBlueBubblesMessage(chatGuid, "I encountered an error processing your message. Please try again.", 'error-catch', conversation?.id);
       }
     }
   }
@@ -336,10 +430,14 @@ export class MessageRouter {
     return false;
   }
 
-  private async sendBlueBubblesMessage(chatGuid: string, text: string, context: string): Promise<void> {
+  private async sendBlueBubblesMessage(chatGuid: string, text: string, context: string, conversationId?: string) {
     if (!config.bluebubbles.sendEnabled) {
       logWarn('BlueBubbles sending disabled via config - skipping outbound message', { chatGuid, context });
       return;
+    }
+
+    if (conversationId) {
+      this.recordOutboundMessage(conversationId, text);
     }
 
     try {
