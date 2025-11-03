@@ -8,13 +8,13 @@ TEXTMYAGENT turns everyday texting into an interface for a Claude-powered execut
 
 ### Why BlueBubbles-first matters
 
-- <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/message-circle.svg" alt="message icon" width="18" /> **Native iMessage reach.** Users stay inside Messages with zero installs. Competitors typically rely on SMS short codes or clunky web chats that break continuity.
-- <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/cpu.svg" alt="cpu icon" width="18" /> **Tight device integration.** BlueBubbles exposes delivery receipts, read states, attachments, and reactions—capabilities most “texting agents” can’t reliably access.
-- <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/shield-check.svg" alt="shield icon" width="18" /> **Owned infrastructure.** Everything funnels through your hardware, eliminating vendor lock-in and allowing strict credential control.
+- 💬 **Native iMessage reach.** Users stay inside Messages with zero installs. Competitors typically rely on SMS short codes or clunky web chats that break continuity.
+- 🧠 **Tight device integration.** BlueBubbles exposes delivery receipts, read states, attachments, and reactions—capabilities most “texting agents” can’t reliably access.
+- 🛡️ **Owned infrastructure.** Everything funnels through your hardware, eliminating vendor lock-in and allowing strict credential control.
 
 > **Other texting agents?** Most lean on brittle SMS gateways, lack live context memory, and force users into separate dashboards. TEXTMYAGENT lives where conversations already happen, keeps full histories, and ships with extensible tools. In short: they send blasts; we deliver a concierge.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/stars.svg" alt="stars icon" width="20" /> Why This Exists
+## ✨ Why This Exists
 
 People already live in their messaging apps. TEXTMYAGENT keeps the AI assistant there, so users can:
 
@@ -24,7 +24,7 @@ People already live in their messaging apps. TEXTMYAGENT keeps the AI assistant 
 
 The platform is built for founders and operators who want a dependable AI teammate that fits existing communication workflows.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/brain.svg" alt="brain icon" width="20" /> Core Feature Set
+## 🧠 Core Feature Set
 
 | Capability | Description |
 | --- | --- |
@@ -36,7 +36,7 @@ The platform is built for founders and operators who want a dependable AI teamma
 | **Reminders & proactive outreach** | Natural language reminder parsing with reliable delivery through iMessage. |
 | **Health monitoring** | Database/BlueBubbles readiness checks and graceful restarts. |
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/box.svg" alt="box icon" width="20" /> Architecture Overview
+## 🧱 Architecture Overview
 
 ```
 TEXTMYAGENT
@@ -65,7 +65,7 @@ Key services inside `agent-service`:
 - **NotificationService** – escalates critical events (e.g., repeated 429s) via iMessage to admin phones.
 - **ReminderService** – natural language parsing + Bull queue to deliver proactive messages.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/rocket.svg" alt="rocket icon" width="20" /> Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
 
@@ -101,7 +101,7 @@ npm run dev
 
 Successful startup shows logs confirming database, Redis, and BlueBubbles connections plus the Express server on port 3000.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/list-todo.svg" alt="process icon" width="20" /> Usage Flow
+## 📝 Usage Flow
 
 1. **Inbound message** reaches BlueBubbles → forwarded to TEXTMYAGENT.
 2. **MessageRouter** persists the user message, builds context (summary + recent tail), and requests a Claude completion.
@@ -110,7 +110,7 @@ Successful startup shows logs confirming database, Redis, and BlueBubbles connec
 5. **BlueBubblesClient** sends the reply over iMessage/SMS.
 6. **Notifications** fire if requests exhaust retries or other critical errors occur.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/settings.svg" alt="settings icon" width="20" /> Configuration Highlights
+## ⚙️ Configuration Highlights
 
 Environment variables (see `.env.example` for defaults):
 
@@ -127,7 +127,7 @@ Environment variables (see `.env.example` for defaults):
 | `DATABASE_URL`, `REDIS_URL` | Persistence and job queue |
 | `ENCRYPTION_KEY`, `SESSION_SECRET` | Secure storage and sessions |
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/radar.svg" alt="radar icon" width="20" /> Features in Detail
+## 📡 Features in Detail
 
 ### Conversation Intelligence
 - **Automated summarization** keeps context manageable by trimming older turns and persisting a session memory snippet.
@@ -142,7 +142,7 @@ Environment variables (see `.env.example` for defaults):
 - Tool framework supports custom actions (e.g., CRM lookups, ticket creation).
 - Reminder and notification pipelines can be extended to other channels (email, push) with minimal changes.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/map.svg" alt="map icon" width="20" /> Roadmap Ideas
+## 🗺️ Roadmap Ideas
 
 - **Additional channels**: plug in WhatsApp, Telegram, Slack using similar transport bridges.
 - **Knowledge retrieval**: vector search or RAG for richer answers.
@@ -150,7 +150,7 @@ Environment variables (see `.env.example` for defaults):
 - **Analytics dashboard**: visualize usage, latency, and reminders in a web UI.
 - **Automated tests**: expand integration coverage for BlueBubbles interactions.
 
-## <img src="https://cdn.jsdelivr.net/npm/lucide-static@0/icons/book-open.svg" alt="book icon" width="20" /> Supporting Docs
+## 📚 Supporting Docs
 
 - `docs/guides/` – quick-starts, migrations, setup checklists, complexity breakdowns.
 - `docs/operations/` – runbooks and deployment notes.
