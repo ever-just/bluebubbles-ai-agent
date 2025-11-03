@@ -2,9 +2,19 @@
 
 > **Mission:** Let anyone talk to an AI assistant over iMessage (or any texting app backed by BlueBubbles) without opening a browser or installing a new app.
 
+**Created by Weldon Makori.** Built with [Lucide](https://lucide.dev) iconography for consistent visuals across our docs.
+
 TEXTMYAGENT turns everyday texting into an interface for a Claude-powered executive assistant. The service listens for inbound SMS/iMessage traffic through BlueBubbles, enriches conversations with long-term memory, and replies in real time while observing usage, rate limits, and context budgets.
 
-## 🌟 Why This Exists
+### Why BlueBubbles-first matters
+
+- <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/message-circle.svg" alt="message icon" width="18" /> **Native iMessage reach.** Users stay inside Messages with zero installs. Competitors typically rely on SMS short codes or clunky web chats that break continuity.
+- <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/cpu.svg" alt="cpu icon" width="18" /> **Tight device integration.** BlueBubbles exposes delivery receipts, read states, attachments, and reactions—capabilities most “texting agents” can’t reliably access.
+- <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/shield-check.svg" alt="shield icon" width="18" /> **Owned infrastructure.** Everything funnels through your hardware, eliminating vendor lock-in and allowing strict credential control.
+
+> **Other texting agents?** Most lean on brittle SMS gateways, lack live context memory, and force users into separate dashboards. TEXTMYAGENT lives where conversations already happen, keeps full histories, and ships with extensible tools. In short: they send blasts; we deliver a concierge.
+
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/stars.svg" alt="stars icon" width="20" /> Why This Exists
 
 People already live in their messaging apps. TEXTMYAGENT keeps the AI assistant there, so users can:
 
@@ -14,7 +24,7 @@ People already live in their messaging apps. TEXTMYAGENT keeps the AI assistant 
 
 The platform is built for founders and operators who want a dependable AI teammate that fits existing communication workflows.
 
-## 🧠 Core Feature Set
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/brain.svg" alt="brain icon" width="20" /> Core Feature Set
 
 | Capability | Description |
 | --- | --- |
@@ -26,7 +36,7 @@ The platform is built for founders and operators who want a dependable AI teamma
 | **Reminders & proactive outreach** | Natural language reminder parsing with reliable delivery through iMessage. |
 | **Health monitoring** | Database/BlueBubbles readiness checks and graceful restarts. |
 
-## 🏗️ Architecture Overview
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/box.svg" alt="box icon" width="20" /> Architecture Overview
 
 ```
 TEXTMYAGENT
@@ -55,7 +65,7 @@ Key services inside `agent-service`:
 - **NotificationService** – escalates critical events (e.g., repeated 429s) via iMessage to admin phones.
 - **ReminderService** – natural language parsing + Bull queue to deliver proactive messages.
 
-## 🚀 Getting Started
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/rocket.svg" alt="rocket icon" width="20" /> Getting Started
 
 ### Prerequisites
 
@@ -91,7 +101,7 @@ npm run dev
 
 Successful startup shows logs confirming database, Redis, and BlueBubbles connections plus the Express server on port 3000.
 
-## 🧾 Usage Flow
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/list-todo.svg" alt="process icon" width="20" /> Usage Flow
 
 1. **Inbound message** reaches BlueBubbles → forwarded to TEXTMYAGENT.
 2. **MessageRouter** persists the user message, builds context (summary + recent tail), and requests a Claude completion.
@@ -100,7 +110,7 @@ Successful startup shows logs confirming database, Redis, and BlueBubbles connec
 5. **BlueBubblesClient** sends the reply over iMessage/SMS.
 6. **Notifications** fire if requests exhaust retries or other critical errors occur.
 
-## ⚙️ Configuration Highlights
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/settings.svg" alt="settings icon" width="20" /> Configuration Highlights
 
 Environment variables (see `.env.example` for defaults):
 
@@ -117,7 +127,7 @@ Environment variables (see `.env.example` for defaults):
 | `DATABASE_URL`, `REDIS_URL` | Persistence and job queue |
 | `ENCRYPTION_KEY`, `SESSION_SECRET` | Secure storage and sessions |
 
-## 📡 Features in Detail
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/radar.svg" alt="radar icon" width="20" /> Features in Detail
 
 ### Conversation Intelligence
 - **Automated summarization** keeps context manageable by trimming older turns and persisting a session memory snippet.
@@ -132,7 +142,7 @@ Environment variables (see `.env.example` for defaults):
 - Tool framework supports custom actions (e.g., CRM lookups, ticket creation).
 - Reminder and notification pipelines can be extended to other channels (email, push) with minimal changes.
 
-## 🛣️ Roadmap Ideas
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/map.svg" alt="map icon" width="20" /> Roadmap Ideas
 
 - **Additional channels**: plug in WhatsApp, Telegram, Slack using similar transport bridges.
 - **Knowledge retrieval**: vector search or RAG for richer answers.
@@ -140,13 +150,15 @@ Environment variables (see `.env.example` for defaults):
 - **Analytics dashboard**: visualize usage, latency, and reminders in a web UI.
 - **Automated tests**: expand integration coverage for BlueBubbles interactions.
 
-## 📚 Supporting Docs
+## <img src="https://raw.githubusercontent.com/lucide-icons/lucide/master/icons/book-open.svg" alt="book icon" width="20" /> Supporting Docs
 
-- `architecture/system-design.md` – in-depth diagrams and flow explanations.
+- `docs/guides/` – quick-starts, migrations, setup checklists, complexity breakdowns.
+- `docs/operations/` – runbooks and deployment notes.
+- `docs/templates/` – status/report templates for repeating comms.
+- `docs/notes/` – in-progress research plans and exploratory findings.
+- `docs/logs/` – optional log captures (gitignored by default).
+- `architecture/` – in-depth diagrams and flow explanations.
 - `deployment/` – scripts and runbooks for DigitalOcean and other infrastructure.
-- `docs/` – playbooks (`operations/`), reusable status templates, and log captures (`logs/`).
-- `findings/` – research notes on integrations (Anthropic, Claude SDK, etc.).
-- `MIGRATION-GUIDE.md` / `SETUP-CHECKLIST.md` – operational handoff references.
 
 ## 🔒 Security Practices
 
