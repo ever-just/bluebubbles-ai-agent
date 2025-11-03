@@ -33,9 +33,10 @@ TEXTMYAGENT
 ├── agent-service/                 # Node/TypeScript core
 │   ├── src/config                 # Runtime configuration
 │   ├── src/database               # TypeORM entities & migrations
+│   ├── src/handlers               # Message preprocessing pipeline (text, media, reactions)
 │   ├── src/integrations           # BlueBubbles client, external APIs
 │   ├── src/services               # Core orchestrators (Claude, context, reminders, notifications)
-│   ├── src/tools                  # Tool registry & implementations
+│   ├── src/tools                  # Tool registry & server-exposed Claude tools
 │   ├── src/utils                  # Logging, metrics, helpers
 │   └── src/index.ts               # Express bootstrap & health endpoints
 ├── bluebubbles-app/               # Upstream BlueBubbles Flutter app (reference)
@@ -106,7 +107,9 @@ Environment variables (see `.env.example` for defaults):
 | Key | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Claude authentication |
-| `ANTHROPIC_MODEL` | Claude model (defaults to `claude-3-haiku-20240307`) |
+| `ANTHROPIC_MODEL` | Claude model (defaults to `claude-3-5-haiku-latest`) |
+| `ANTHROPIC_ENABLE_WEB_SEARCH` | Enable Anthropic built-in web search tool (default `true`) |
+| `ANTHROPIC_ENABLE_WEB_FETCH` | Enable Anthropic web fetch beta tool (default `false`) |
 | `ANTHROPIC_RESPONSE_MAX_TOKENS` | Hard cap on response token budget to control costs |
 | `ANTHROPIC_MAX_CONCURRENT_REQUESTS` | Queue concurrency |
 | `ANTHROPIC_SUMMARY_TRIGGER_TOKENS` | When to summarize conversation history |
@@ -141,6 +144,7 @@ Environment variables (see `.env.example` for defaults):
 
 - `architecture/system-design.md` – in-depth diagrams and flow explanations.
 - `deployment/` – scripts and runbooks for DigitalOcean and other infrastructure.
+- `docs/` – playbooks (`operations/`), reusable status templates, and log captures (`logs/`).
 - `findings/` – research notes on integrations (Anthropic, Claude SDK, etc.).
 - `MIGRATION-GUIDE.md` / `SETUP-CHECKLIST.md` – operational handoff references.
 

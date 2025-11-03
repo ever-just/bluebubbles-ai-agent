@@ -8,7 +8,7 @@ import { BlueBubblesMessage } from './types';
 import { getMessageRouter, MessageRouter } from './services/MessageRouter';
 import { getReminderService } from './services/ReminderService';
 import { getContextService } from './services/ContextService';
-import { logInfo, logError, logWarn } from './utils/logger';
+import { logInfo, logError, logWarn, logDebug } from './utils/logger';
 import { config } from './config';
 
 const app = express();
@@ -74,7 +74,7 @@ app.post('/api/inject-message', async (req, res) => {
 
     if (globalMessageRouter) {
       await globalMessageRouter.handleIncomingMessage(bbMessage);
-      res.json({
+      return res.json({
         success: true,
         message: 'Message processed through full AI pipeline',
         data: {
@@ -84,12 +84,13 @@ app.post('/api/inject-message', async (req, res) => {
           aiProcessing: 'complete'
         }
       });
-    } else {
-      res.status(500).json({ error: 'Message router not available' });
     }
+
+    return res.status(500).json({ error: 'Message router not available' });
   } catch (error) {
     logError('Manual message injection failed', error);
     res.status(500).json({ error: 'Failed to inject message' });
+    return;
   }
 });
 
@@ -136,23 +137,68 @@ app.post('/webhook/messages', async (req, res) => {
     const { data, type } = req.body;
 
     if (type === 'new-message' && data) {
-      logInfo('Received webhook message', { guid: data.guid, text: data.text?.substring(0, 50) });
+      logInfo('Received webhook message', {
+        guid: data.guid,
+        text: data.text?.substring(0, 120),
+        chatId: data.chat_id || data.chat_guid || data.chatGuid,
+        rawKeys: Object.keys(data)
+      });
+
+      const rawIsFromMe =
+        data.is_from_me ??
+        data.isFromMe ??
+        data.is_me ??
+        data.isMe ??
+        data.sender?.is_from_me ??
+        data.sender?.isFromMe;
+
+      const isFromMe = (() => {
+        if (typeof rawIsFromMe === 'boolean') return rawIsFromMe;
+        if (typeof rawIsFromMe === 'number') return rawIsFromMe !== 0;
+        if (typeof rawIsFromMe === 'string') {
+          const normalized = rawIsFromMe.trim().toLowerCase();
+          return normalized === 'true' || normalized === '1' || normalized === 'yes';
+        }
+        return false;
+      })();
+
+      logDebug('Webhook is_from_me evaluation', {
+        guid: data.guid,
+        rawIsFromMe,
+        interpreted: isFromMe
+      });
+
+      if (isFromMe) {
+        logInfo('Ignoring self-sent BlueBubbles webhook message', {
+          guid: data.guid,
+          textPreview: data.text?.substring(0, 60)
+        });
+        return res.json({ success: true, message: 'Ignored self-sent message' });
+      }
 
       // Convert webhook message format to BlueBubblesMessage format
       const bbMessage: BlueBubblesMessage = {
         guid: data.guid,
         text: data.text,
-        handle_id: data.handle_id,
+        handle_id: data.handle_id ?? data.handleId ?? data.handle?.id,
         service: data.service || 'iMessage',
-        is_from_me: data.is_from_me || false,
+        is_from_me: isFromMe,
         date: data.date,
-        chat_id: data.chat_id || data.chat_guid,
+        chat_id: data.chat_id
+          || data.chat_guid
+          || data.chatGuid
+          || data.chat?.guid,
         attachments: data.attachments || [],
         handle: data.handle ? {
           id: data.handle.id,
           identifier: data.handle.identifier,
           address: data.handle.address,
           service: data.handle.service || 'iMessage'
+        } : data.sender ? {
+          id: data.sender.id,
+          identifier: data.sender.identifier,
+          address: data.sender.address,
+          service: data.sender.service || 'iMessage'
         } : undefined
       };
 
@@ -165,18 +211,18 @@ app.post('/webhook/messages', async (req, res) => {
 
       if (globalMessageRouter) {
         await globalMessageRouter.handleIncomingMessage(bbMessage);
-        res.json({ success: true, message: 'Message processed' });
+        return res.json({ success: true, message: 'Message processed' });
       } else {
         logError('Message router not initialized for webhook');
-        res.status(500).json({ error: 'Message router not available' });
+        return res.status(500).json({ error: 'Message router not available' });
       }
     } else {
       console.log('🔗 WEBHOOK IGNORED: not a new-message event');
-      res.json({ success: true, message: 'Ignored non-message event' });
+      return res.json({ success: true, message: 'Ignored non-message event' });
     }
   } catch (error) {
     logError('Webhook processing failed', error);
-    res.status(500).json({ error: 'Failed to process webhook' });
+    return res.status(500).json({ error: 'Failed to process webhook' });
   }
 });
 
