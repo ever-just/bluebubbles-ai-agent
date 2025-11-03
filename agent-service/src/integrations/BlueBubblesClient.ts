@@ -2,7 +2,7 @@ import { io, Socket } from 'socket.io-client';
 import { EventEmitter } from 'events';
 import axios from 'axios';
 import { logInfo, logError, logWarn, logDebug } from '../utils/logger';
-import { BlueBubblesMessage, BlueBubblesChat, BlueBubblesHandle, ServiceResponse } from '../types';
+import { BlueBubblesMessage } from '../types';
 import { config } from '../config';
 
 export class BlueBubblesClient extends EventEmitter {

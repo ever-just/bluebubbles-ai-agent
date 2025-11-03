@@ -155,7 +155,7 @@ export class MessageRouter {
 
         const serverResponse = await fetch(serverInfoUrl.toString());
         if (serverResponse.ok) {
-          const serverData = await serverResponse.json();
+          await serverResponse.json();
           console.log('🔄 HTTP POLLING: BlueBubbles API accessible');
 
           // TODO: Implement message detection when API endpoints become available
@@ -370,7 +370,7 @@ export class MessageRouter {
     bbMessage: BlueBubblesMessage,
     user: User
   ): Promise<string | null> {
-    let chatGuid = bbMessage.chat_id || conversation.channelConversationId;
+    const chatGuid = bbMessage.chat_id || conversation.channelConversationId;
 
     if (chatGuid) {
       return chatGuid;

@@ -1,7 +1,6 @@
 import { Repository } from 'typeorm';
 import { AppDataSource } from '../database/connection';
 import { ContextMemory } from '../database/entities/ContextMemory';
-import { User } from '../database/entities/User';
 import { Message } from '../database/entities/Message';
 import { logInfo, logError, logDebug } from '../utils/logger';
 import { ServiceResponse, ContextMemory as IContextMemory } from '../types';

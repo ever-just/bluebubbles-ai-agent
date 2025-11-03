@@ -1,4 +1,4 @@
-import { logInfo, logWarn, logError } from '../utils/logger';
+import { logInfo, logWarn } from '../utils/logger';
 
 /**
  * Security configuration for Agent Grace
