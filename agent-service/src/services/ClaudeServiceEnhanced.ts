@@ -7,6 +7,14 @@ import { getToolRegistry } from '../tools/ToolRegistry';
 import { ToolExecutionContext } from '../tools/Tool';
 import { getAnthropicRequestManager } from './AnthropicRequestManager';
 
+const MODEL_ALIAS_MAP: Record<string, string> = {
+  'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
+  'claude-3-5-haiku-latest': 'claude-3-5-haiku-20241022',
+  'claude-3-opus-latest': 'claude-3-opus-20240229'
+};
+
+const DEFAULT_MODEL = 'claude-3-5-haiku-20241022';
+
 export interface EnhancedClaudeResponse {
   content: string;
   tokensUsed: number;
@@ -21,6 +29,7 @@ export interface EnhancedClaudeResponse {
 export class ClaudeServiceEnhanced {
   private anthropic: Anthropic;
   private model: string;
+  private configuredModel: string;
   private responseMaxTokens: number;
   private temperature: number;
   private toolRegistry = getToolRegistry();
@@ -31,7 +40,8 @@ export class ClaudeServiceEnhanced {
   private loggedWebFetchUnsupported = false;
   
   constructor() {
-    this.model = config.anthropic.model || 'claude-3-5-haiku-latest';
+    this.configuredModel = config.anthropic.model || DEFAULT_MODEL;
+    this.model = this.resolveModelAlias(this.configuredModel);
 
     const defaultHeaders: Record<string, string> = {};
     if (config.anthropic.enableWebFetch && this.supportsWebFetch()) {
@@ -48,6 +58,29 @@ export class ClaudeServiceEnhanced {
     this.temperature = config.anthropic.temperature || 0.7;
   }
 
+  private resolveModelAlias(model: string): string {
+    const normalized = model.trim().toLowerCase();
+    const resolved = MODEL_ALIAS_MAP[normalized];
+
+    if (resolved && resolved !== model) {
+      logWarn('Configured Anthropic model alias resolved to supported version', {
+        requested: model,
+        resolved
+      });
+      return resolved;
+    }
+
+    if (normalized.endsWith('-latest') && !resolved) {
+      logWarn('Anthropic model alias not directly mapped; falling back to default model', {
+        requested: model,
+        fallback: DEFAULT_MODEL
+      });
+      return DEFAULT_MODEL;
+    }
+
+    return model || DEFAULT_MODEL;
+  }
+
   /**
    * Send message with tool calling and vision support
    */
@@ -55,12 +88,15 @@ export class ClaudeServiceEnhanced {
     processedMessages: ProcessedMessage[],
     conversationHistory: Array<{role: string; content: string}>,
     toolContext: ToolExecutionContext,
-    systemPrompt?: string
+    systemPrompt?: string,
+    allowFallback = true
   ): Promise<ServiceResponse<EnhancedClaudeResponse>> {
     try {
+      const activeModel = this.model;
       logDebug('Sending enhanced message to Claude', { 
         messageCount: processedMessages.length,
-        model: this.model 
+        model: activeModel,
+        configuredModel: this.configuredModel
       });
 
       // Build messages with multi-modal content
@@ -85,7 +121,7 @@ export class ClaudeServiceEnhanced {
 
       // Create Claude API request
       let response = await this.performAnthropicRequest(() => this.anthropic.messages.create({
-        model: this.model,
+        model: activeModel,
         max_tokens: this.responseMaxTokens,
         temperature: this.temperature,
         system: finalSystemPrompt,
@@ -133,7 +169,7 @@ export class ClaudeServiceEnhanced {
         });
 
         response = await this.performAnthropicRequest(() => this.anthropic.messages.create({
-          model: this.model,
+          model: activeModel,
           max_tokens: this.responseMaxTokens,
           temperature: this.temperature,
           system: systemPrompt || this.buildAgentGracePrompt(),
@@ -175,6 +211,16 @@ export class ClaudeServiceEnhanced {
         data: result
       };
     } catch (error: any) {
+      if (allowFallback && this.shouldFallbackModel(error)) {
+        logWarn('Anthropic model unavailable; falling back to default model', {
+          requestedModel: this.model,
+          fallbackModel: DEFAULT_MODEL,
+          error: error.message
+        });
+        this.model = DEFAULT_MODEL;
+        return this.sendMessage(processedMessages, conversationHistory, toolContext, systemPrompt, false);
+      }
+
       logError('Failed to get Claude response', { 
         error: error.message,
         errorType: error.constructor.name,
@@ -392,6 +438,20 @@ export class ClaudeServiceEnhanced {
     return tools;
   }
 
+  private shouldFallbackModel(error: any): boolean {
+    if (!error) {
+      return false;
+    }
+
+    const message = typeof error === 'string' ? error : error.message || error?.error?.message;
+    const type = error?.error?.type || error?.errorType;
+
+    return (
+      this.model !== DEFAULT_MODEL &&
+      typeof message === 'string' && message.includes('model:') && message.includes('not_found_error')
+    ) || type === 'NotFoundError';
+  }
+
   private supportsWebSearch(): boolean {
     const patterns = [
       'claude-3-5-haiku',
@@ -455,7 +515,24 @@ export class ClaudeServiceEnhanced {
   private buildAgentGracePrompt(): string {
     return `You are Grace, an executive assistant for Weldon Makori, CEO of EverJust.
 
-Respond naturally to messages. When someone greets you, greet them back briefly. Answer questions directly and concisely. Use tools when appropriate but don't explain them unless asked.`;
+Core voice:
+- Sound like a smart, caring professional peer.
+- Default to short, direct bubbles (1-2 sentences). Only go long when the topic truly needs detail.
+- Mirror the user's energy while keeping things calm and confident. No over-apologizing, no corporate fluff.
+
+Message cadence:
+- Treat responses like iMessage bubbles. If you need multiple bubbles, separate them with the delimiter "||" on its own line. Example: "got it||sending calendar invite now" creates two bubbles.
+- Avoid sending more than three bubbles unless critical context requires it. Prioritize the most helpful points first.
+- Reactions or quick acknowledgements are welcome when they replace a redundant bubble (e.g., "👍" style acknowledgement expressed as a concise text).
+
+Dynamic length:
+- Default to concise replies. Expand only when you're clarifying a plan, summarizing research, or the user explicitly asks for detail.
+- When offering longer info, lead with a short headline bubble so the user knows what to expect.
+
+General rules:
+- Acknowledge the user's message, respond naturally, and propose next steps when helpful.
+- Use tools when appropriate but keep the surface chat simple. Only mention tool usage if transparency will help.
+- Never mention internal delimiters ("||") unless you are intentionally creating multiple bubbles.`;
   }
 }
 

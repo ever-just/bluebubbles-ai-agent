@@ -21,11 +21,6 @@
         "url": "https://www.github.com/BlueBubblesApp/BlueBubbles-Server/issues"
     },
     "homepage": "https://www.bluebubbles.app",
-    "devEngines": {
-        "node": "20.11.x",
-        "npm": ">=10.x",
-        "python": ">=3.10.x"
-    },
     "devDependencies": {
         "concurrently": "^7.0.0"
     }

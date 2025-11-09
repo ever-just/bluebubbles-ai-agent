@@ -15,6 +15,7 @@ export class BlueBubblesClient extends EventEmitter {
   private reconnectDelay: number;
   private chatGuidCache = new Map<string, { guid: string; cachedAt: number }>();
   private readonly cacheTtlMs = 5 * 60 * 1000;
+  private activeTypingIndicators = new Set<string>();
 
   constructor() {
     super();
@@ -161,6 +162,42 @@ export class BlueBubblesClient extends EventEmitter {
     }
 
     await this.sendMessageViaRest(chatGuid, text, attachments);
+  }
+
+  async startTypingIndicator(chatGuid: string): Promise<void> {
+    if (!chatGuid || this.activeTypingIndicators.has(chatGuid)) {
+      return;
+    }
+
+    try {
+      const typingUrl = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/typing?password=${encodeURIComponent(this.password)}`;
+      await axios.post(typingUrl);
+      this.activeTypingIndicators.add(chatGuid);
+      logDebug('Started typing indicator via REST', { chatGuid });
+    } catch (error) {
+      logWarn('Failed to start typing indicator', {
+        chatGuid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  async stopTypingIndicator(chatGuid: string): Promise<void> {
+    if (!chatGuid || !this.activeTypingIndicators.has(chatGuid)) {
+      return;
+    }
+
+    try {
+      const typingUrl = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/typing?password=${encodeURIComponent(this.password)}`;
+      await axios.delete(typingUrl);
+      this.activeTypingIndicators.delete(chatGuid);
+      logDebug('Stopped typing indicator via REST', { chatGuid });
+    } catch (error) {
+      logWarn('Failed to stop typing indicator', {
+        chatGuid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   async getChats(limit?: number, includeParticipants = true): Promise<any[]> {

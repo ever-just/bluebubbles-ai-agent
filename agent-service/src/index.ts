@@ -176,6 +176,29 @@ app.post('/webhook/messages', async (req, res) => {
         return res.json({ success: true, message: 'Ignored self-sent message' });
       }
 
+      const chatGuidCandidates: Array<string | null | undefined> = [
+        data.chat_id,
+        data.chat_guid,
+        data.chatGuid,
+        data.chat?.guid
+      ];
+
+      if (Array.isArray(data.chats)) {
+        for (const chat of data.chats) {
+          if (!chat) continue;
+          chatGuidCandidates.push(chat.guid, chat.chat_guid, chat.chatGuid);
+        }
+      }
+
+      const resolvedChatId = chatGuidCandidates.find(candidate => typeof candidate === 'string' && candidate.trim().length > 0) || undefined;
+
+      if (!resolvedChatId) {
+        logWarn('Webhook message missing chat guid - downstream reply may fail', {
+          guid: data.guid,
+          chatGuidCandidates: chatGuidCandidates.filter(candidate => candidate != null)
+        });
+      }
+
       // Convert webhook message format to BlueBubblesMessage format
       const bbMessage: BlueBubblesMessage = {
         guid: data.guid,
@@ -184,10 +207,7 @@ app.post('/webhook/messages', async (req, res) => {
         service: data.service || 'iMessage',
         is_from_me: isFromMe,
         date: data.date,
-        chat_id: data.chat_id
-          || data.chat_guid
-          || data.chatGuid
-          || data.chat?.guid,
+        chat_id: resolvedChatId,
         attachments: data.attachments || [],
         handle: data.handle ? {
           id: data.handle.id,

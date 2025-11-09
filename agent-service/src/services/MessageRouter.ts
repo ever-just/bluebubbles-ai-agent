@@ -1,4 +1,4 @@
-import { Repository } from 'typeorm';
+import { Repository, IsNull, Not } from 'typeorm';
 import { AppDataSource } from '../database/connection';
 import { User } from '../database/entities/User';
 import { Conversation } from '../database/entities/Conversation';
@@ -29,7 +29,9 @@ export class MessageRouter {
   private conversationSummarizer = getConversationSummarizer();
   private readonly summaryTailLength = 6;
   private readonly duplicateWindowMs = 60_000;
+  private readonly duplicateContentWindowMs = 45_000;
   private recentMessageCache = new Map<string, number>();
+  private recentMessageContentCache = new Map<string, { normalized: string; timestamp: number }>();
   private recentOutboundMessages = new Map<string, { hash: string; timestamp: number }[]>();
   private outboundMessageTtlMs = 2 * 60_000;
   private blueBubblesPollingDisabled = false;
@@ -186,6 +188,8 @@ export class MessageRouter {
     let user: User | null = null;
     let conversation: Conversation | null = null;
     let chatGuid: string | null = null;
+    let typingStarted = false;
+    let typingGuid: string | null = null;
 
     try {
       logInfo('Processing incoming message', {
@@ -206,6 +210,16 @@ export class MessageRouter {
         return;
       }
 
+      if (this.isDuplicateMessageContent(bbMessage)) {
+        logInfo('Duplicate BlueBubbles message content detected - skipping processing', {
+          guid: bbMessage.guid,
+          chatId: bbMessage.chat_id,
+          handle: bbMessage.handle?.address,
+          preview: bbMessage.text?.substring(0, 80)
+        });
+        return;
+      }
+
       const processedMessage = await this.messageHandlerFactory.processMessage(bbMessage);
       if (!processedMessage) {
         logDebug('Message skipped by handlers (empty or unsupported type)');
@@ -219,15 +233,33 @@ export class MessageRouter {
         return;
       }
 
-      // Get user handle for context
-      const userHandle = bbMessage.handle?.address || 'unknown';
+      const userHandle = bbMessage.handle?.address || user.phoneNumber || 'unknown';
+
+      const resolvedChatGuid = await this.determineChatGuid(bbMessage, user);
+      if (resolvedChatGuid && !bbMessage.chat_id) {
+        bbMessage.chat_id = resolvedChatGuid;
+      }
+
+      bbMessage.metadata = {
+        ...(bbMessage.metadata || {}),
+        resolvedChatGuid,
+        originalChatId: bbMessage.metadata?.originalChatId ?? bbMessage.chat_id
+      };
 
       // Get or create conversation
       conversation = await this.getOrCreateConversation(
         user.id,
         'imessage',
-        bbMessage.chat_id
+        bbMessage.chat_id ?? undefined
       );
+
+      if (config.messaging.typingIndicators && !typingStarted) {
+        typingGuid = bbMessage.chat_id || conversation.channelConversationId || resolvedChatGuid || null;
+        if (typingGuid) {
+          await this.blueBubblesClient.startTypingIndicator(typingGuid);
+          typingStarted = true;
+        }
+      }
 
       if (this.isRecentAssistantEcho(conversation.id, bbMessage, processedMessage.text)) {
         logDebug('Skipping assistant echo detected via outbound cache', {
@@ -266,7 +298,7 @@ export class MessageRouter {
         userHandle,
         userId: user.id,
         conversationId: conversation.id,
-        isAdmin: this.securityManager.isAdmin(userHandle)
+        isAdmin: userHandle !== 'unknown' && this.securityManager.isAdmin(userHandle)
       };
 
       // Get AI response with tools and multi-modal support
@@ -278,6 +310,12 @@ export class MessageRouter {
 
       chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
 
+      if (typingStarted && typingGuid) {
+        await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+        typingStarted = false;
+        typingGuid = null;
+      }
+
       if (aiResponse.success && aiResponse.data) {
         const sendEnabled = config.bluebubbles.sendEnabled;
 
@@ -288,30 +326,40 @@ export class MessageRouter {
         }
 
         if (sendEnabled) {
-          // Save AI response to database only if we intend to send it back through BlueBubbles
-          await this.saveMessage(
-            user.id,
-            conversation.id,
-            'assistant',
-            aiResponse.data.content,
-            {
-              source: 'bluebubbles',
-              tokensUsed: aiResponse.data.tokensUsed,
-              inputTokens: aiResponse.data.metadata?.usage?.input_tokens,
-              toolsUsed: aiResponse.data.toolsUsed
-            }
-          );
+          const assistantMessages = this.prepareAssistantMessages(aiResponse.data.content);
+          const burstDelayMs = config.messaging.responseBurstDelayMs;
 
-          // Send response back through BlueBubbles
           chatGuid = chatGuid ?? bbMessage.chat_id ?? conversation?.channelConversationId ?? null;
 
-          if (chatGuid) {
-            await this.sendBlueBubblesMessage(chatGuid, aiResponse.data.content, 'assistant-response', conversation.id);
-          } else {
+          if (!chatGuid) {
             logError('No chat GUID available to send response', {
               conversationId: conversation.id,
               incomingChatId: bbMessage.chat_id
             });
+          } else {
+            for (let i = 0; i < assistantMessages.length; i += 1) {
+              const part = assistantMessages[i];
+              const metadata = {
+                source: 'bluebubbles',
+                tokensUsed: i === 0 ? aiResponse.data.tokensUsed : undefined,
+                inputTokens: i === 0 ? aiResponse.data.metadata?.usage?.input_tokens : undefined,
+                toolsUsed: i === 0 ? aiResponse.data.toolsUsed : undefined
+              } as MessageMetadata;
+
+              await this.saveMessage(
+                user.id,
+                conversation.id,
+                'assistant',
+                part,
+                metadata
+              );
+
+              await this.sendBlueBubblesMessage(chatGuid, part, 'assistant-response', conversation.id);
+
+              if (i < assistantMessages.length - 1 && burstDelayMs > 0) {
+                await this.delay(burstDelayMs);
+              }
+            }
           }
         }
       } else {
@@ -327,7 +375,7 @@ export class MessageRouter {
       }
     } catch (error) {
       logError('Error handling incoming message', error);
-      
+
       // Try to send error message if we have chat_id
       if (!chatGuid) {
         if (!conversation || !user) {
@@ -344,7 +392,47 @@ export class MessageRouter {
       if (chatGuid && config.bluebubbles.sendEnabled) {
         await this.sendBlueBubblesMessage(chatGuid, "I encountered an error processing your message. Please try again.", 'error-catch', conversation?.id);
       }
+    } finally {
+      if (typingStarted && typingGuid && config.messaging.typingIndicators) {
+        try {
+          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+        } catch (error) {
+          logWarn('Failed to stop typing indicator during cleanup', {
+            chatGuid: typingGuid,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
     }
+  }
+
+  private prepareAssistantMessages(content: string): string[] {
+    const delimiterPattern = /\s*\|\|\s*/;
+    const parts = content
+      .split(delimiterPattern)
+      .map(part => part.trim())
+      .filter(part => part.length > 0);
+
+    if (parts.length === 0) {
+      return [content.trim()];
+    }
+
+    const maxBurst = Math.max(1, config.messaging.maxResponseBurst || 3);
+    if (parts.length <= maxBurst) {
+      return parts;
+    }
+
+    const limited = parts.slice(0, maxBurst - 1);
+    const remainder = parts.slice(maxBurst - 1).join(' ');
+    limited.push(remainder.trim());
+    return limited.filter(part => part.length > 0);
+  }
+
+  private async delay(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+    await new Promise(resolve => setTimeout(resolve, ms));
   }
 
   private async ensureConversationContext(bbMessage: BlueBubblesMessage): Promise<{ conversation: Conversation | null; user: User | null }> {
@@ -354,7 +442,7 @@ export class MessageRouter {
         return { conversation: null, user: null };
       }
 
-      const conversation = await this.getOrCreateConversation(user.id, 'imessage', bbMessage.chat_id);
+      const conversation = await this.getOrCreateConversation(user.id, 'imessage', bbMessage.chat_id ?? undefined);
       return { conversation, user };
     } catch (error) {
       logWarn('Failed to ensure conversation context after error', {
@@ -427,6 +515,31 @@ export class MessageRouter {
     }
 
     this.recentMessageCache.set(guid, now);
+    return false;
+  }
+
+  private isDuplicateMessageContent(bbMessage: BlueBubblesMessage): boolean {
+    const text = bbMessage.text?.trim();
+    if (!text) {
+      return false;
+    }
+
+    const cacheKey = bbMessage.chat_id || bbMessage.handle?.address || 'global';
+    const normalized = text.toLowerCase();
+    const now = Date.now();
+
+    for (const [key, entry] of this.recentMessageContentCache) {
+      if (now - entry.timestamp > this.duplicateContentWindowMs) {
+        this.recentMessageContentCache.delete(key);
+      }
+    }
+
+    const existing = this.recentMessageContentCache.get(cacheKey);
+    if (existing && existing.normalized === normalized && now - existing.timestamp < this.duplicateContentWindowMs) {
+      return true;
+    }
+
+    this.recentMessageContentCache.set(cacheKey, { normalized, timestamp: now });
     return false;
   }
 
@@ -606,38 +719,105 @@ export class MessageRouter {
   private async getOrCreateConversation(
     userId: string,
     channel: 'imessage' | 'email',
-    channelConversationId: string
+    channelConversationId?: string
   ): Promise<Conversation> {
-    let conversation = await this.conversationRepo.findOne({
-      where: {
-        userId,
-        channel,
-        channelConversationId
+    const normalizedChannelId = channelConversationId?.trim() || null;
+
+    let conversation: Conversation | null = null;
+
+    if (normalizedChannelId) {
+      conversation = await this.conversationRepo.findOne({
+        where: {
+          userId,
+          channel,
+          channelConversationId: normalizedChannelId
+        }
+      });
+    }
+
+    if (!conversation) {
+      conversation = await this.conversationRepo.findOne({
+        where: {
+          userId,
+          channel,
+          channelConversationId: IsNull()
+        }
+      });
+
+      if (conversation && normalizedChannelId && !conversation.channelConversationId) {
+        logInfo('Backfilling missing conversation channel GUID', {
+          conversationId: conversation.id,
+          channelConversationId: normalizedChannelId
+        });
+        conversation.channelConversationId = normalizedChannelId;
       }
-    });
+    }
 
     if (!conversation) {
       conversation = this.conversationRepo.create({
         userId,
         channel,
-        channelConversationId,
+        channelConversationId: normalizedChannelId ?? undefined,
         metadata: {}
       });
       
       conversation = await this.conversationRepo.save(conversation);
-      logInfo('Created new conversation', { id: conversation.id });
+      logInfo('Created new conversation', { id: conversation.id, channelConversationId: normalizedChannelId });
     }
 
-    // Update last message timestamp
     conversation.lastMessageAt = new Date();
-    // Backfill missing channel conversation id if known
-    if (!conversation.channelConversationId && channelConversationId) {
-      conversation.channelConversationId = channelConversationId;
+
+    if (normalizedChannelId && conversation.channelConversationId !== normalizedChannelId) {
+      conversation.channelConversationId = normalizedChannelId;
     }
 
     await this.conversationRepo.save(conversation);
 
     return conversation;
+  }
+
+  private async determineChatGuid(bbMessage: BlueBubblesMessage, user: User | null): Promise<string | null> {
+    const directGuid = bbMessage.chat_id?.trim();
+    if (directGuid) {
+      return directGuid;
+    }
+
+    const metadataGuid = bbMessage.metadata?.resolvedChatGuid?.trim();
+    if (metadataGuid) {
+      return metadataGuid;
+    }
+
+    if (user) {
+      const priorConversation = await this.conversationRepo.findOne({
+        where: {
+          userId: user.id,
+          channel: 'imessage',
+          channelConversationId: Not(IsNull())
+        },
+        order: { lastMessageAt: 'DESC' }
+      });
+
+      if (priorConversation?.channelConversationId) {
+        return priorConversation.channelConversationId;
+      }
+    }
+
+    const handleAddress = bbMessage.handle?.address || user?.phoneNumber;
+    if (handleAddress) {
+      try {
+        const resolved = await this.blueBubblesClient.findChatGuidByHandle(handleAddress);
+        if (resolved) {
+          return resolved;
+        }
+      } catch (error) {
+        logWarn('Failed to resolve chat guid via BlueBubbles handle lookup', {
+          handleAddress,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    return null;
   }
 
   private async saveMessage(

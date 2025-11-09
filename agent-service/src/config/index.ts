@@ -93,6 +93,13 @@ export const config: AppConfig = {
     encryptionKey: process.env.ENCRYPTION_KEY!,
     sessionSecret: process.env.SESSION_SECRET!,
     rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || '60', 10)
+  },
+
+  messaging: {
+    typingIndicators: parseBoolean(process.env.TYPING_INDICATORS_ENABLED, true),
+    typingIndicatorDurationMs: parseInt(process.env.TYPING_INDICATOR_DURATION_MS || '5000', 10),
+    maxResponseBurst: parseInt(process.env.MAX_RESPONSE_BURST || '3', 10),
+    responseBurstDelayMs: parseInt(process.env.RESPONSE_BURST_DELAY_MS || '200', 10)
   }
 };
 

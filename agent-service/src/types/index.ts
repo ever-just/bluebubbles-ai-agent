@@ -107,9 +107,10 @@ export interface BlueBubblesMessage {
   date: number;
   date_read?: number;
   date_delivered?: number;
-  chat_id: string;
+  chat_id?: string;
   attachments?: BlueBubblesAttachment[];
   handle?: BlueBubblesHandle;
+  metadata?: Record<string, any>;
 }
 
 export interface BlueBubblesChat {
@@ -213,6 +214,7 @@ export interface AppConfig {
   anthropic: AnthropicConfig;
   logging: LoggingConfig;
   security: SecurityConfig;
+  messaging: MessagingConfig;
 }
 
 export interface DatabaseConfig {
@@ -229,9 +231,16 @@ export interface RedisConfig {
 export interface BlueBubblesConfig {
   url: string;
   password: string;
-  pollInterval?: number;
-  timeout?: number;
-  sendEnabled?: boolean;
+  pollInterval: number;
+  timeout: number;
+  sendEnabled: boolean;
+}
+
+export interface MessagingConfig {
+  typingIndicators: boolean;
+  typingIndicatorDurationMs: number;
+  maxResponseBurst: number;
+  responseBurstDelayMs: number;
 }
 
 export interface AnthropicConfig {
