@@ -8,10 +8,11 @@ import { ClaudeServiceEnhanced, getEnhancedClaudeService } from './ClaudeService
 import { ContextService, getContextService } from './ContextService';
 import { ReminderService } from './ReminderService';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
-import { ServiceResponse, BlueBubblesMessage, MessageMetadata } from '../types';
+import { ServiceResponse, BlueBubblesMessage, MessageMetadata, ContextMemory } from '../types';
 import { getMessageHandlerFactory } from '../handlers/MessageHandlerFactory';
 import { getSecurityManager } from '../middleware/security';
 import { ToolExecutionContext } from '../tools/Tool';
+import type { PromptRuntimeContext } from '../utils/SystemPromptBuilder';
 import { config } from '../config';
 import { getConversationSummarizer } from './ConversationSummarizer';
 import type { ConversationTurn } from './ConversationSummarizer';
@@ -44,6 +45,103 @@ export class MessageRouter {
     this.claudeService = getEnhancedClaudeService();
     this.contextService = getContextService();
     this.reminderService = new ReminderService();
+  }
+
+  private async buildPromptRuntimeContext(
+    user: User,
+    conversation: Conversation,
+    conversationHistory: Array<{ role: string; content: string }>
+  ): Promise<PromptRuntimeContext> {
+    const userProfile: Record<string, string | undefined> = {
+      phoneNumber: user.phoneNumber,
+      email: user.email,
+      timezone: user.preferences?.timezone
+    };
+
+    const userPreferences = Object.entries(user.preferences ?? {})
+      .filter(([key, value]) => value !== undefined && value !== null && typeof value !== 'object')
+      .map(([key, value]) => `${this.formatPromptLabel(key)}: ${String(value)}`)
+      .slice(0, 6);
+
+    const recentMessages = conversationHistory
+      .slice(-4)
+      .map(turn => `${turn.role === 'assistant' ? 'Grace' : 'User'}: ${turn.content}`);
+
+    const summary = typeof conversation.metadata?.summary === 'string'
+      ? conversation.metadata.summary
+      : undefined;
+
+    const activeTasks = Array.isArray(conversation.metadata?.activeTasks)
+      ? conversation.metadata.activeTasks.map((task: any) => this.formatListItem(task, 180)).slice(0, 5)
+      : undefined;
+
+    const activeReminders = Array.isArray(conversation.metadata?.activeReminders)
+      ? conversation.metadata.activeReminders.map((reminder: any) => this.formatListItem(reminder, 180)).slice(0, 5)
+      : undefined;
+
+    const [sessionMemories, longTermMemories] = await Promise.all([
+      this.contextService.getUserMemories(user.id, 'session', conversation.id),
+      this.contextService.getUserMemories(user.id, 'long_term')
+    ]);
+
+    const sessionHighlights = this.extractMemoryHighlights(sessionMemories, 5);
+    const remainingBudget = Math.max(0, 5 - sessionHighlights.length);
+    const longTermHighlights = remainingBudget > 0
+      ? this.extractMemoryHighlights(longTermMemories, remainingBudget)
+      : [];
+
+    const memoryHighlights = [...sessionHighlights, ...longTermHighlights];
+
+    const additionalNotes = Array.isArray(conversation.metadata?.notes)
+      ? conversation.metadata.notes.map((note: any) => this.formatListItem(note, 200)).slice(0, 3)
+      : undefined;
+
+    const conversationGoals = Array.isArray(conversation.metadata?.goals)
+      ? conversation.metadata.goals.map((goal: any) => this.formatListItem(goal, 180)).slice(0, 3)
+      : undefined;
+
+    return {
+      currentDatetime: new Date().toISOString(),
+      userProfile,
+      userPreferences: userPreferences.length > 0 ? userPreferences : undefined,
+      memoryHighlights: memoryHighlights.length > 0 ? memoryHighlights : undefined,
+      activeTasks,
+      activeReminders,
+      conversationSummary: summary,
+      recentMessages: recentMessages.length > 0 ? recentMessages : undefined,
+      conversationGoals,
+      additionalNotes
+    };
+  }
+
+  private extractMemoryHighlights(
+    response: ServiceResponse<ContextMemory[]>,
+    limit: number
+  ): string[] {
+    if (!response?.success || !response.data || response.data.length === 0 || limit <= 0) {
+      return [];
+    }
+
+    return response.data
+      .slice(0, limit)
+      .map(memory => `${this.formatPromptLabel(memory.key)}: ${this.formatListItem(memory.value, 220)}`);
+  }
+
+  private formatPromptLabel(value: string): string {
+    return value
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^./, char => char.toUpperCase());
+  }
+
+  private formatListItem(raw: unknown, maxLength: number): string {
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    if (text.length <= maxLength) {
+      return text;
+    }
+    return `${text.slice(0, maxLength - 1)}…`;
   }
 
   private estimateTokenUsage(history: Array<{ role: string; content: string }>, latestMessage?: string) {
@@ -293,12 +391,36 @@ export class MessageRouter {
         messageText
       );
 
+      const chatGuidForRead = bbMessage.chat_id
+        || conversation.channelConversationId
+        || bbMessage.metadata?.resolvedChatGuid
+        || await this.determineChatGuid(bbMessage, user);
+
+      if (chatGuidForRead && config.bluebubbles.markChatsRead) {
+        try {
+          await this.blueBubblesClient.markChatRead(chatGuidForRead);
+          logDebug('Marked chat as read via BlueBubbles private API', {
+            chatGuid: chatGuidForRead,
+            conversationId: conversation.id
+          });
+        } catch (error) {
+          logWarn('Failed to mark chat read via BlueBubbles', {
+            chatGuid: chatGuidForRead,
+            conversationId: conversation.id,
+            error: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
       // Create tool execution context
+      const runtimeContext = await this.buildPromptRuntimeContext(user, conversation, conversationHistory);
+
       const toolContext: ToolExecutionContext = {
         userHandle,
         userId: user.id,
         conversationId: conversation.id,
-        isAdmin: userHandle !== 'unknown' && this.securityManager.isAdmin(userHandle)
+        isAdmin: userHandle !== 'unknown' && this.securityManager.isAdmin(userHandle),
+        runtimeContext
       };
 
       // Get AI response with tools and multi-modal support

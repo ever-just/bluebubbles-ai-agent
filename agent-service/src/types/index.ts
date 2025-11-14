@@ -234,6 +234,7 @@ export interface BlueBubblesConfig {
   pollInterval: number;
   timeout: number;
   sendEnabled: boolean;
+  markChatsRead: boolean;
 }
 
 export interface MessagingConfig {

@@ -200,6 +200,24 @@ export class BlueBubblesClient extends EventEmitter {
     }
   }
 
+  async markChatRead(chatGuid: string): Promise<void> {
+    if (!chatGuid) {
+      return;
+    }
+
+    try {
+      const url = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/read?password=${encodeURIComponent(this.password)}`;
+      await axios.post(url);
+      logDebug('Marked chat as read via REST', { chatGuid });
+    } catch (error) {
+      logWarn('Failed to mark chat as read via REST', {
+        chatGuid,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      throw error;
+    }
+  }
+
   async getChats(limit?: number, includeParticipants = true): Promise<any[]> {
     return new Promise((resolve, reject) => {
       if (!this.socket || !this.isConnected) {
