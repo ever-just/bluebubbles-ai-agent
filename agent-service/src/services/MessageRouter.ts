@@ -64,7 +64,7 @@ export class MessageRouter {
       .slice(0, 6);
 
     const recentMessages = conversationHistory
-      .slice(-4)
+      .slice(-20)
       .map(turn => `${turn.role === 'assistant' ? 'Grace' : 'User'}: ${turn.content}`);
 
     const summary = typeof conversation.metadata?.summary === 'string'
