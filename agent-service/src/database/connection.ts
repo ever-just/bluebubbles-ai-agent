@@ -8,6 +8,9 @@ import { ContextMemory } from './entities/ContextMemory';
 import { Reminder } from './entities/Reminder';
 import { CalendarEvent } from './entities/CalendarEvent';
 import { OAuthToken } from './entities/OAuthToken';
+import { Trigger } from './entities/Trigger';
+import { ExecutionAgentLog } from './entities/ExecutionAgentLog';
+import { WorkingMemoryState } from './entities/WorkingMemoryState';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -21,7 +24,10 @@ export const AppDataSource = new DataSource({
     ContextMemory,
     Reminder,
     CalendarEvent,
-    OAuthToken
+    OAuthToken,
+    Trigger,
+    ExecutionAgentLog,
+    WorkingMemoryState
   ],
   migrations: ['src/database/migrations/*.ts'],
   subscribers: ['src/database/subscribers/*.ts'],

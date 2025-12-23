@@ -30,6 +30,7 @@ export interface ToolExecutionContext {
   userId: string;
   conversationId: string;
   isAdmin: boolean;
+  runtimeContext?: any; // Prompt runtime context for enhanced tool execution
 }
 
 export interface ITool {

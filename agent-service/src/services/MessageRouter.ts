@@ -12,10 +12,25 @@ import { ServiceResponse, BlueBubblesMessage, MessageMetadata, ContextMemory } f
 import { getMessageHandlerFactory } from '../handlers/MessageHandlerFactory';
 import { getSecurityManager } from '../middleware/security';
 import { ToolExecutionContext } from '../tools/Tool';
-import type { PromptRuntimeContext } from '../utils/SystemPromptBuilder';
+// PromptRuntimeContext defined inline (SystemPromptBuilder module planned for Phase 4)
+interface PromptRuntimeContext {
+  currentDatetime: string;
+  userProfile: Record<string, string | undefined>;
+  userPreferences?: string[];
+  memoryHighlights?: string[];
+  activeTasks?: string[];
+  activeReminders?: string[];
+  conversationSummary?: string;
+  recentMessages?: string[];
+  conversationGoals?: string[];
+  additionalNotes?: string[];
+}
 import { config } from '../config';
 import { getConversationSummarizer } from './ConversationSummarizer';
 import type { ConversationTurn } from './ConversationSummarizer';
+import { createInteractionAgentRuntime, initializeIMessageAdapter } from '../agents';
+import { createWorkingMemoryLog, WorkingMemoryLog } from './WorkingMemoryLog';
+import { getSummarizationService } from './SummarizationService';
 
 export class MessageRouter {
   private userRepo: Repository<User>;
@@ -34,8 +49,32 @@ export class MessageRouter {
   private recentMessageCache = new Map<string, number>();
   private recentMessageContentCache = new Map<string, { normalized: string; timestamp: number }>();
   private recentOutboundMessages = new Map<string, { hash: string; timestamp: number }[]>();
-  private outboundMessageTtlMs = 2 * 60_000;
+  private outboundMessageTtlMs = 5 * 60_000; // 5 minutes for echo detection
+  
+  // Global outbound cache - catches echoes before conversation is resolved
+  private globalOutboundCache = new Map<string, number>(); // normalized text -> timestamp
+  private readonly globalOutboundTtlMs = 5 * 60_000; // 5 minutes
   private blueBubblesPollingDisabled = false;
+  private dualAgentEnabled = false;
+  private workingMemoryLogs = new Map<string, WorkingMemoryLog>();
+  private summarizationService = getSummarizationService();
+  
+  // Message debounce: collect rapid messages before processing
+  private messageDebounceBuffers = new Map<string, {
+    messages: BlueBubblesMessage[];
+    timer: NodeJS.Timeout | null;
+  }>();
+  private readonly debounceDelayMs = 2000; // 2 seconds
+  
+  // Startup protection: ignore messages received within first N seconds after startup
+  private startupTime = Date.now();
+  private readonly startupGracePeriodMs = 10_000; // 10 seconds
+  private startupProtectionEnabled = true;
+  
+  // Response rate limiter: prevent runaway loops by limiting responses per conversation
+  private responseRateLimiter = new Map<string, { count: number; windowStart: number }>();
+  private readonly maxResponsesPerWindow = 5; // Max 5 responses per window
+  private readonly rateLimitWindowMs = 30_000; // 30 second window
 
   constructor() {
     this.userRepo = AppDataSource.getRepository(User);
@@ -45,6 +84,13 @@ export class MessageRouter {
     this.claudeService = getEnhancedClaudeService();
     this.contextService = getContextService();
     this.reminderService = new ReminderService();
+    
+    // Initialize dual-agent system if enabled
+    this.dualAgentEnabled = config.agents?.enableDualAgent ?? false;
+    if (this.dualAgentEnabled) {
+      initializeIMessageAdapter(this.blueBubblesClient);
+      logInfo('Dual-agent system enabled');
+    }
   }
 
   private async buildPromptRuntimeContext(
@@ -67,9 +113,21 @@ export class MessageRouter {
       .slice(-20)
       .map(turn => `${turn.role === 'assistant' ? 'Grace' : 'User'}: ${turn.content}`);
 
-    const summary = typeof conversation.metadata?.summary === 'string'
+    // Get summary from conversation metadata or WorkingMemoryLog
+    let summary = typeof conversation.metadata?.summary === 'string'
       ? conversation.metadata.summary
       : undefined;
+    
+    // Also check WorkingMemoryLog for a more recent summary
+    try {
+      const workingMemoryLog = await this.getWorkingMemoryLog(user.id, conversation.id);
+      const wmSummary = workingMemoryLog.getSummary();
+      if (wmSummary && (!summary || wmSummary.length > summary.length)) {
+        summary = wmSummary;
+      }
+    } catch (e) {
+      // Ignore errors - summary is optional
+    }
 
     const activeTasks = Array.isArray(conversation.metadata?.activeTasks)
       ? conversation.metadata.activeTasks.map((task: any) => this.formatListItem(task, 180)).slice(0, 5)
@@ -100,8 +158,21 @@ export class MessageRouter {
       ? conversation.metadata.goals.map((goal: any) => this.formatListItem(goal, 180)).slice(0, 3)
       : undefined;
 
+    // Format datetime in user's timezone (or default to America/Chicago)
+    const userTimezone = user.preferences?.timezone || 'America/Chicago';
+    const formattedDatetime = new Date().toLocaleString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      timeZoneName: 'short',
+      timeZone: userTimezone
+    });
+
     return {
-      currentDatetime: new Date().toISOString(),
+      currentDatetime: formattedDatetime,
       userProfile,
       userPreferences: userPreferences.length > 0 ? userPreferences : undefined,
       memoryHighlights: memoryHighlights.length > 0 ? memoryHighlights : undefined,
@@ -164,17 +235,56 @@ export class MessageRouter {
       return;
     }
 
-    const existing = this.recentOutboundMessages.get(conversationId) ?? [];
     const now = Date.now();
+    
+    // Record in conversation-specific cache
+    const existing = this.recentOutboundMessages.get(conversationId) ?? [];
     const filtered = existing.filter(entry => now - entry.timestamp < this.outboundMessageTtlMs);
     filtered.push({ hash: normalized, timestamp: now });
     this.recentOutboundMessages.set(conversationId, filtered);
+    
+    // Also record in global cache for early echo detection
+    this.globalOutboundCache.set(normalized, now);
+    
+    // Clean up old global entries
+    for (const [hash, timestamp] of this.globalOutboundCache) {
+      if (now - timestamp > this.globalOutboundTtlMs) {
+        this.globalOutboundCache.delete(hash);
+      }
+    }
+  }
+  
+  /**
+   * Check if incoming message matches any recent outbound message globally.
+   * This catches echoes before conversation ID is resolved.
+   */
+  private isGlobalOutboundEcho(text?: string | null): boolean {
+    if (!text) return false;
+    
+    const normalized = this.normalizeMessageText(text);
+    if (!normalized) return false;
+    
+    const timestamp = this.globalOutboundCache.get(normalized);
+    if (timestamp && Date.now() - timestamp < this.globalOutboundTtlMs) {
+      logInfo('Global echo detection: Message matches recent outbound', {
+        textPreview: normalized.substring(0, 50),
+        ageMs: Date.now() - timestamp
+      });
+      return true;
+    }
+    
+    return false;
   }
 
   private isRecentAssistantEcho(conversationId: string, bbMessage: BlueBubblesMessage, text?: string | null): boolean {
     const hasHandle = Boolean(bbMessage.handle?.address || bbMessage.handle?.identifier || bbMessage.handle_id);
     const normalized = this.normalizeMessageText(text ?? '');
+    
     if (!hasHandle) {
+      logDebug('Echo check: No handle found - treating as echo', {
+        guid: bbMessage.guid,
+        conversationId
+      });
       return true;
     }
 
@@ -184,6 +294,11 @@ export class MessageRouter {
 
     const entries = this.recentOutboundMessages.get(conversationId);
     if (!entries || entries.length === 0) {
+      logDebug('Echo check: No recent outbound messages to compare', {
+        guid: bbMessage.guid,
+        conversationId,
+        normalizedPreview: normalized.substring(0, 50)
+      });
       return false;
     }
 
@@ -196,6 +311,11 @@ export class MessageRouter {
       }
       if (!matched && entry.hash === normalized) {
         matched = true;
+        logDebug('Echo check: MATCH FOUND - this is an echo of our outbound message', {
+          guid: bbMessage.guid,
+          conversationId,
+          ageMs: now - entry.timestamp
+        });
         continue;
       }
       remaining.push(entry);
@@ -207,6 +327,15 @@ export class MessageRouter {
       this.recentOutboundMessages.delete(conversationId);
     }
 
+    if (!matched) {
+      logDebug('Echo check: No match in outbound cache - processing as new message', {
+        guid: bbMessage.guid,
+        conversationId,
+        cachedCount: entries.length,
+        normalizedPreview: normalized.substring(0, 50)
+      });
+    }
+
     return matched;
   }
 
@@ -214,15 +343,264 @@ export class MessageRouter {
     return text.replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
+  /**
+   * Check if we've hit the response rate limit for a conversation.
+   * Returns true if rate limited (should NOT send response).
+   */
+  private isResponseRateLimited(conversationId: string): boolean {
+    const now = Date.now();
+    const limiter = this.responseRateLimiter.get(conversationId);
+    
+    if (!limiter) {
+      // First response in this window
+      this.responseRateLimiter.set(conversationId, { count: 1, windowStart: now });
+      return false;
+    }
+    
+    // Check if window has expired
+    if (now - limiter.windowStart > this.rateLimitWindowMs) {
+      // Reset window
+      this.responseRateLimiter.set(conversationId, { count: 1, windowStart: now });
+      return false;
+    }
+    
+    // Within window - check count
+    if (limiter.count >= this.maxResponsesPerWindow) {
+      logWarn('Response rate limit hit - blocking response to prevent loop', {
+        conversationId,
+        count: limiter.count,
+        maxAllowed: this.maxResponsesPerWindow,
+        windowMs: this.rateLimitWindowMs,
+        windowAgeMs: now - limiter.windowStart
+      });
+      return true;
+    }
+    
+    // Increment count
+    limiter.count++;
+    return false;
+  }
+
+  /**
+   * Get or create a working memory log for a user/conversation.
+   */
+  private async getWorkingMemoryLog(userId: string, conversationId: string): Promise<WorkingMemoryLog> {
+    const key = `${userId}:${conversationId}`;
+    
+    let log = this.workingMemoryLogs.get(key);
+    if (!log) {
+      log = await createWorkingMemoryLog(userId, conversationId);
+      this.workingMemoryLogs.set(key, log);
+    }
+    
+    return log;
+  }
+
+  /**
+   * Append a message to working memory and trigger summarization if needed.
+   */
+  private async appendToWorkingMemory(
+    userId: string,
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string
+  ): Promise<void> {
+    try {
+      const log = await this.getWorkingMemoryLog(userId, conversationId);
+      
+      log.append({
+        role,
+        content,
+        timestamp: new Date()
+      });
+
+      // Check if summarization is needed
+      if (log.needsSummarization()) {
+        logInfo('Triggering working memory summarization', {
+          userId,
+          conversationId,
+          entryCount: log.getEntryCount()
+        });
+        await this.summarizationService.checkAndSummarize(log);
+      }
+
+      // Save state periodically
+      await log.save();
+    } catch (error) {
+      logWarn('Failed to append to working memory', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  /**
+   * Check if a message is too old to process (backlog protection).
+   * Messages older than maxAgeMs are considered stale and should be skipped.
+   * 
+   * BlueBubbles uses Apple Cocoa time: nanoseconds since Jan 1, 2001 (macOS 10.13+)
+   * or seconds since Jan 1, 2001 (older macOS).
+   */
+  private isMessageTooOld(bbMessage: BlueBubblesMessage, maxAgeMs: number = 60_000): boolean {
+    const messageTimestamp = bbMessage.date;
+    if (!messageTimestamp) {
+      // If no timestamp, assume it's recent
+      return false;
+    }
+    
+    // Convert Apple Cocoa time to Unix timestamp
+    // Apple epoch is Jan 1, 2001 00:00:00 UTC
+    const appleEpochMs = new Date('2001-01-01T00:00:00Z').getTime();
+    
+    // BlueBubbles sends nanoseconds since 2001 on macOS 10.13+
+    // Divide by 10^6 to get milliseconds, then add Apple epoch
+    const messageUnixMs = appleEpochMs + (messageTimestamp / 1_000_000);
+    
+    const messageAge = Date.now() - messageUnixMs;
+    
+    // Sanity check: if message appears to be from the future (negative age) or 
+    // extremely old (> 24 hours), log a warning - this might indicate timestamp issues
+    if (messageAge < -60_000) {
+      logWarn('Message has future timestamp - possible clock skew', {
+        guid: bbMessage.guid,
+        messageAgeMs: Math.round(messageAge),
+        textPreview: bbMessage.text?.substring(0, 30)
+      });
+      // Don't reject future messages - could be clock skew
+    }
+    
+    if (messageAge > maxAgeMs) {
+      logInfo('Skipping old message (backlog protection)', {
+        guid: bbMessage.guid,
+        messageAgeMs: Math.round(messageAge),
+        messageAgeMinutes: Math.round(messageAge / 60_000),
+        maxAgeMs,
+        textPreview: bbMessage.text?.substring(0, 30),
+        handle: bbMessage.handle?.address
+      });
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Debounce incoming messages - collect rapid messages before processing.
+   * This prevents multiple Claude calls when user sends several messages quickly.
+   */
+  private debounceMessage(bbMessage: BlueBubblesMessage): void {
+    // Skip debounce during startup protection
+    if (this.startupProtectionEnabled) {
+      return;
+    }
+    
+    // Skip self-sent messages (check is_from_me flag)
+    if (bbMessage.is_from_me) {
+      logDebug('Debounce: Skipping self-sent message (is_from_me=true)', {
+        guid: bbMessage.guid,
+        textPreview: bbMessage.text?.substring(0, 30)
+      });
+      return;
+    }
+    
+    // EARLY ECHO CHECK: Skip if this matches a recent outbound message
+    // This catches echoes before they enter the debounce buffer
+    if (this.isGlobalOutboundEcho(bbMessage.text)) {
+      logInfo('Debounce: Skipping message - matches recent outbound (early echo detection)', {
+        guid: bbMessage.guid,
+        textPreview: bbMessage.text?.substring(0, 50)
+      });
+      return;
+    }
+    
+    // Skip old messages (backlog protection) - ignore messages older than 2 minutes
+    if (this.isMessageTooOld(bbMessage, 120_000)) {
+      return;
+    }
+    
+    const chatId = bbMessage.chat_id || bbMessage.handle?.address || 'unknown';
+    
+    let buffer = this.messageDebounceBuffers.get(chatId);
+    if (!buffer) {
+      buffer = { messages: [], timer: null };
+      this.messageDebounceBuffers.set(chatId, buffer);
+    }
+
+    // Add message to buffer
+    buffer.messages.push(bbMessage);
+    
+    logDebug('Message added to debounce buffer', {
+      chatId,
+      bufferSize: buffer.messages.length,
+      textPreview: bbMessage.text?.substring(0, 30)
+    });
+
+    // Clear existing timer
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+    }
+
+    // Set new timer
+    buffer.timer = setTimeout(async () => {
+      const messagesToProcess = buffer!.messages;
+      this.messageDebounceBuffers.delete(chatId);
+      
+      if (messagesToProcess.length === 0) {
+        return;
+      }
+      
+      logInfo('Debounce timer expired - processing messages', {
+        chatId,
+        messageCount: messagesToProcess.length
+      });
+      
+      // Process the last message but combine all message texts
+      const lastMessage = messagesToProcess[messagesToProcess.length - 1];
+      
+      // Combine all message texts for context if multiple messages
+      if (messagesToProcess.length > 1) {
+        const combinedText = messagesToProcess
+          .map(m => m.text || '')
+          .filter(t => t.length > 0)
+          .join('\n\n');
+        lastMessage.text = combinedText;
+        lastMessage.metadata = {
+          ...lastMessage.metadata,
+          combinedMessageCount: messagesToProcess.length,
+          originalMessages: messagesToProcess.map(m => m.text?.substring(0, 50))
+        };
+        
+        logInfo('Combined multiple rapid messages', {
+          chatId,
+          messageCount: messagesToProcess.length,
+          combinedLength: combinedText.length
+        });
+      }
+      
+      await this.handleIncomingMessage(lastMessage);
+    }, this.debounceDelayMs);
+  }
+
   async initialize(): Promise<void> {
+    // Record startup time for backlog protection
+    this.startupTime = Date.now();
+    this.startupProtectionEnabled = true;
+    
+    // Disable startup protection after grace period
+    setTimeout(() => {
+      this.startupProtectionEnabled = false;
+      logInfo('Startup protection disabled - now processing new messages', {
+        gracePeriodMs: this.startupGracePeriodMs
+      });
+    }, this.startupGracePeriodMs);
+    
     try {
       // Try to connect to BlueBubbles, but don't block server startup if it fails
       try {
         await this.blueBubblesClient.connect();
 
-        // Set up message listeners only if connected
+        // Set up message listeners only if connected - use debounce for rapid messages
         this.blueBubblesClient.on('message', async (message: BlueBubblesMessage) => {
-          await this.handleIncomingMessage(message);
+          this.debounceMessage(message);
         });
       } catch (blueBubblesError) {
         logWarn('BlueBubbles connection failed during startup - continuing with HTTP polling only', {
@@ -290,6 +668,18 @@ export class MessageRouter {
     let typingGuid: string | null = null;
 
     try {
+      // STARTUP PROTECTION: Skip messages received during grace period to prevent backlog processing
+      if (this.startupProtectionEnabled) {
+        const timeSinceStartup = Date.now() - this.startupTime;
+        logInfo('Ignoring message during startup protection period', {
+          guid: bbMessage.guid,
+          timeSinceStartupMs: timeSinceStartup,
+          gracePeriodMs: this.startupGracePeriodMs,
+          textPreview: bbMessage.text?.substring(0, 30)
+        });
+        return;
+      }
+
       logInfo('Processing incoming message', {
         guid: bbMessage.guid,
         chat: bbMessage.chat_id,
@@ -300,6 +690,15 @@ export class MessageRouter {
       // Skip if message is from the AI (sent by us)
       if (bbMessage.is_from_me) {
         logDebug('Skipping self-sent message (flagged by BlueBubbles)');
+        return;
+      }
+
+      // STALE MESSAGE CHECK: Skip messages older than 5 minutes (catches messages that bypass debounce)
+      if (this.isMessageTooOld(bbMessage, 300_000)) {
+        logInfo('Skipping stale message in handleIncomingMessage', {
+          guid: bbMessage.guid,
+          textPreview: bbMessage.text?.substring(0, 50)
+        });
         return;
       }
 
@@ -314,6 +713,15 @@ export class MessageRouter {
           chatId: bbMessage.chat_id,
           handle: bbMessage.handle?.address,
           preview: bbMessage.text?.substring(0, 80)
+        });
+        return;
+      }
+
+      // GLOBAL ECHO CHECK: Catch our own messages before conversation is resolved
+      if (this.isGlobalOutboundEcho(bbMessage.text)) {
+        logInfo('Skipping message - matches recent outbound (global echo detection)', {
+          guid: bbMessage.guid,
+          textPreview: bbMessage.text?.substring(0, 50)
         });
         return;
       }
@@ -383,7 +791,8 @@ export class MessageRouter {
       );
 
       // Get conversation history and trim with summarization if needed
-      const rawConversationHistory = await this.getConversationHistory(conversation.id, 35);
+      // Reduced from 35 to 15 to avoid including old corrupted data
+      const rawConversationHistory = await this.getConversationHistory(conversation.id, 15);
       const conversationHistory = await this.prepareConversationHistory(
         user.id,
         conversation,
@@ -423,7 +832,60 @@ export class MessageRouter {
         runtimeContext
       };
 
-      // Get AI response with tools and multi-modal support
+      // Use dual-agent system if enabled, otherwise use direct Claude service
+      if (this.dualAgentEnabled) {
+        // Check rate limit before processing dual-agent response
+        if (this.isResponseRateLimited(conversation.id)) {
+          logWarn('Skipping dual-agent response due to rate limit - possible loop detected', {
+            conversationId: conversation.id
+          });
+          return;
+        }
+        
+        chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
+        
+        if (!chatGuid) {
+          logError('No chat GUID available for dual-agent response', {
+            conversationId: conversation.id
+          });
+        } else {
+          // Process via interaction agent (handles its own message sending)
+          const interactionRuntime = createInteractionAgentRuntime(
+            conversation.id,
+            user.id,
+            chatGuid,
+            toolContext,
+            conversationHistory
+          );
+
+          const result = await interactionRuntime.processUserMessage(processedMessage.text || '');
+          
+          logInfo('Dual-agent processing completed', {
+            conversationId: conversation.id,
+            success: result.success,
+            messagesSent: result.messagesSent.length,
+            agentsSpawned: result.agentsSpawned.length
+          });
+
+          // Save assistant messages to database
+          for (const msg of result.messagesSent) {
+            await this.saveMessage(user.id, conversation.id, 'assistant', msg, {
+              source: 'dual-agent',
+              agentsSpawned: result.agentsSpawned
+            } as MessageMetadata);
+            this.recordOutboundMessage(conversation.id, msg);
+          }
+        }
+
+        if (typingStarted && typingGuid) {
+          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+          typingStarted = false;
+          typingGuid = null;
+        }
+        return;
+      }
+
+      // Get AI response with tools and multi-modal support (legacy path)
       const aiResponse = await this.claudeService.sendMessage(
         [processedMessage],
         conversationHistory,
@@ -445,6 +907,14 @@ export class MessageRouter {
           logWarn('Skipping assistant response because BlueBubbles sending is disabled', {
             conversationId: conversation.id
           });
+        }
+
+        // Check rate limit before sending response
+        if (sendEnabled && this.isResponseRateLimited(conversation.id)) {
+          logWarn('Skipping response due to rate limit - possible loop detected', {
+            conversationId: conversation.id
+          });
+          return;
         }
 
         if (sendEnabled) {
@@ -530,24 +1000,46 @@ export class MessageRouter {
 
   private prepareAssistantMessages(content: string): string[] {
     const delimiterPattern = /\s*\|\|\s*/;
-    const parts = content
+    const maxCharPerBubble = 500; // Allow longer messages for informational content
+    
+    // Normalize excessive newlines (3+ newlines -> 2 newlines)
+    const normalizedContent = content.replace(/\n{3,}/g, '\n\n');
+    
+    const parts = normalizedContent
       .split(delimiterPattern)
       .map(part => part.trim())
       .filter(part => part.length > 0);
 
     if (parts.length === 0) {
-      return [content.trim()];
+      return [this.truncateBubble(content.trim(), maxCharPerBubble)];
     }
 
     const maxBurst = Math.max(1, config.messaging.maxResponseBurst || 3);
-    if (parts.length <= maxBurst) {
-      return parts;
+    
+    // Truncate each bubble to max length
+    const truncatedParts = parts.map(part => this.truncateBubble(part, maxCharPerBubble));
+    
+    if (truncatedParts.length <= maxBurst) {
+      return truncatedParts;
     }
 
-    const limited = parts.slice(0, maxBurst - 1);
-    const remainder = parts.slice(maxBurst - 1).join(' ');
-    limited.push(remainder.trim());
+    const limited = truncatedParts.slice(0, maxBurst - 1);
+    const remainder = truncatedParts.slice(maxBurst - 1).join(' ');
+    limited.push(this.truncateBubble(remainder.trim(), maxCharPerBubble));
     return limited.filter(part => part.length > 0);
+  }
+  
+  private truncateBubble(text: string, maxLength: number): string {
+    if (text.length <= maxLength) {
+      return text;
+    }
+    // Truncate at word boundary and add ellipsis
+    const truncated = text.substring(0, maxLength - 3);
+    const lastSpace = truncated.lastIndexOf(' ');
+    if (lastSpace > maxLength * 0.7) {
+      return truncated.substring(0, lastSpace) + '...';
+    }
+    return truncated + '...';
   }
 
   private async delay(ms: number): Promise<void> {
@@ -694,8 +1186,18 @@ export class MessageRouter {
     const { input: inputTokens } = this.estimateTokenUsage(history, latestMessage);
 
     if (inputTokens <= summaryTrigger) {
+      logDebug('Conversation history within token limit, no summarization needed', {
+        inputTokens,
+        summaryTrigger
+      });
       return history;
     }
+
+    logInfo('Conversation history exceeds token threshold, triggering summarization', {
+      inputTokens,
+      summaryTrigger,
+      historyLength: history.length
+    });
 
     const summarySourceCount = Math.max(history.length - this.summaryTailLength, 0);
     if (summarySourceCount <= 0) {
@@ -802,33 +1304,58 @@ export class MessageRouter {
 
   private async getOrCreateUserFromMessage(bbMessage: BlueBubblesMessage): Promise<User | null> {
     try {
-      // Extract phone number from the message handle
-      const phoneNumber = bbMessage.handle?.address;
-      if (!phoneNumber) {
-        logError('No phone number found in message handle', { handle: bbMessage.handle });
+      // Extract identifier from the message handle (can be phone number OR email)
+      const handleAddress = bbMessage.handle?.address;
+      if (!handleAddress) {
+        logError('No handle address found in message', { handle: bbMessage.handle });
         return null;
       }
 
-      logDebug('Extracted phone number from message', { phoneNumber });
-
-      // Check if user exists
-      let user = await this.userRepo.findOne({
-        where: { phoneNumber }
+      // Determine if this is an email or phone number
+      const isEmail = handleAddress.includes('@');
+      
+      logDebug('Extracted handle address from message', { 
+        handleAddress, 
+        isEmail 
       });
+
+      // Check if user exists by email or phone number
+      let user: User | null = null;
+      
+      if (isEmail) {
+        user = await this.userRepo.findOne({
+          where: { email: handleAddress }
+        });
+      } else {
+        user = await this.userRepo.findOne({
+          where: { phoneNumber: handleAddress }
+        });
+      }
 
       // Create user if doesn't exist
       if (!user) {
-        user = this.userRepo.create({
-          phoneNumber,
+        const userData: Partial<User> = {
           preferences: {
             aiPersonality: 'friendly',
             enableReminders: true,
             reminderChannelPreference: 'imessage'
-          }
-        });
-
+          } as any
+        };
+        
+        if (isEmail) {
+          userData.email = handleAddress;
+        } else {
+          userData.phoneNumber = handleAddress;
+        }
+        
+        user = this.userRepo.create(userData);
         user = await this.userRepo.save(user);
-        logInfo('Created new user', { id: user.id, phoneNumber });
+        
+        logInfo('Created new user', { 
+          id: user.id, 
+          email: isEmail ? handleAddress : undefined,
+          phoneNumber: isEmail ? undefined : handleAddress 
+        });
       }
 
       return user;
@@ -960,21 +1487,60 @@ export class MessageRouter {
 
     const savedMessage = await this.messageRepo.save(message);
     logDebug('Message saved', { id: savedMessage.id, role });
+
+    // Append to working memory for summarization
+    void this.appendToWorkingMemory(userId, conversationId, role, content);
     
     return savedMessage;
   }
 
   private async getConversationHistory(conversationId: string, limit: number = 20): Promise<Array<{role: string; content: string}>> {
+    // Fetch more than needed so we can filter out corrupted messages
     const messages = await this.messageRepo.find({
       where: { conversationId },
-      order: { createdAt: 'ASC' },
-      take: limit
+      order: { createdAt: 'DESC' }, // Get most recent first
+      take: limit * 2 // Fetch extra to account for filtered messages
     });
 
-    return messages.map(msg => ({
+    // Filter out corrupted/problematic messages
+    const filtered = messages
+      .filter(msg => this.isValidHistoryMessage(msg))
+      .slice(0, limit) // Take only what we need
+      .reverse(); // Restore chronological order
+
+    return filtered.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
+  }
+  
+  /**
+   * Filter out corrupted or problematic messages from history
+   */
+  private isValidHistoryMessage(msg: { role: string; content: string }): boolean {
+    const content = msg.content?.trim() || '';
+    
+    // Skip empty messages
+    if (content.length === 0) return false;
+    
+    // Skip error messages that got saved incorrectly
+    const errorPatterns = [
+      "I'm having trouble processing your message",
+      "Please try again later",
+      "sorry, you reached the message limit",
+      "upgrade to continue chatting"
+    ];
+    if (errorPatterns.some(pattern => content.toLowerCase().includes(pattern.toLowerCase()))) {
+      return false;
+    }
+    
+    // Skip messages that are just URLs (likely spam or errors)
+    if (/^https?:\/\/\S+$/.test(content)) return false;
+    
+    // Skip extremely long messages (likely email drafts saved incorrectly)
+    if (content.length > 2000) return false;
+    
+    return true;
   }
 
   // Note: Old methods removed - action items and context are now handled by tools and Claude directly

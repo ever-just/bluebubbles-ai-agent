@@ -76,7 +76,7 @@ export const config: AppConfig = {
     maxConcurrentRequests: parseInt(process.env.ANTHROPIC_MAX_CONCURRENT_REQUESTS || '2', 10),
     summaryTriggerTokens: parseInt(process.env.ANTHROPIC_SUMMARY_TRIGGER_TOKENS || '4000', 10),
     contextWindowTokens: parseInt(process.env.ANTHROPIC_CONTEXT_WINDOW_TOKENS || '6000', 10),
-    responseMaxTokens: parseInt(process.env.ANTHROPIC_RESPONSE_MAX_TOKENS || '600', 10),
+    responseMaxTokens: parseInt(process.env.ANTHROPIC_RESPONSE_MAX_TOKENS || '350', 10),
     enableWebSearch: parseBoolean(process.env.ANTHROPIC_ENABLE_WEB_SEARCH, true),
     webSearchMaxUses: parseInt(process.env.ANTHROPIC_WEB_SEARCH_MAX_USES || '5', 10),
     enableWebFetch: parseBoolean(process.env.ANTHROPIC_ENABLE_WEB_FETCH, false),
@@ -101,6 +101,12 @@ export const config: AppConfig = {
     typingIndicatorDurationMs: parseInt(process.env.TYPING_INDICATOR_DURATION_MS || '5000', 10),
     maxResponseBurst: parseInt(process.env.MAX_RESPONSE_BURST || '3', 10),
     responseBurstDelayMs: parseInt(process.env.RESPONSE_BURST_DELAY_MS || '200', 10)
+  },
+
+  agents: {
+    enableDualAgent: parseBoolean(process.env.ENABLE_DUAL_AGENT, false),
+    executionTimeoutSeconds: parseInt(process.env.AGENT_EXECUTION_TIMEOUT_SECONDS || '90', 10),
+    maxToolIterations: parseInt(process.env.AGENT_MAX_TOOL_ITERATIONS || '8', 10)
   }
 };
 

@@ -43,7 +43,7 @@ export interface Message {
 }
 
 export interface MessageMetadata {
-  source?: 'bluebubbles' | 'gmail' | 'system';
+  source?: 'bluebubbles' | 'gmail' | 'system' | 'dual-agent';
   originalMessageId?: string;
   attachments?: Attachment[] | BlueBubblesAttachment[];
   isGroupChat?: boolean;
@@ -215,6 +215,13 @@ export interface AppConfig {
   logging: LoggingConfig;
   security: SecurityConfig;
   messaging: MessagingConfig;
+  agents: AgentsConfig;
+}
+
+export interface AgentsConfig {
+  enableDualAgent: boolean;
+  executionTimeoutSeconds: number;
+  maxToolIterations: number;
 }
 
 export interface DatabaseConfig {

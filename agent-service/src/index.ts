@@ -8,6 +8,7 @@ import { BlueBubblesMessage } from './types';
 import { getMessageRouter, MessageRouter } from './services/MessageRouter';
 import { getReminderService } from './services/ReminderService';
 import { getContextService } from './services/ContextService';
+import { startTriggerScheduler, stopTriggerScheduler } from './services/TriggerScheduler';
 import { logInfo, logError, logWarn, logDebug } from './utils/logger';
 import { config } from './config';
 
@@ -137,11 +138,17 @@ app.post('/webhook/messages', async (req, res) => {
     const { data, type } = req.body;
 
     if (type === 'new-message' && data) {
+      // Log ALL fields to debug is_from_me detection
       logInfo('Received webhook message', {
         guid: data.guid,
         text: data.text?.substring(0, 120),
         chatId: data.chat_id || data.chat_guid || data.chatGuid,
-        rawKeys: Object.keys(data)
+        rawKeys: Object.keys(data),
+        // Explicitly log all possible isFromMe field variations
+        is_from_me_raw: data.is_from_me,
+        isFromMe_raw: data.isFromMe,
+        sender_isFromMe: data.sender?.isFromMe,
+        handle_address: data.handle?.address
       });
 
       const rawIsFromMe =
@@ -361,6 +368,10 @@ async function startServer() {
     setInterval(async () => {
       await contextService.cleanupExpiredMemories();
     }, 60 * 60 * 1000); // Every hour
+
+    // Start trigger scheduler for proactive agent execution
+    startTriggerScheduler();
+    logInfo('Trigger scheduler started');
     
     // Start HTTP server
     const PORT = config.port;
@@ -378,6 +389,9 @@ async function startServer() {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   logWarn('Shutting down gracefully...');
+  
+  // Stop trigger scheduler
+  stopTriggerScheduler();
   
   httpServer.close(() => {
     logInfo('HTTP server closed');

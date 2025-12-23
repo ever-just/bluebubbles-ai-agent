@@ -1,17 +1,36 @@
 import { logInfo, logWarn, logError } from '../utils/logger';
 import { ensureToolPermissions, ITool, ToolDefinition, ToolExecutionContext, ToolResult } from './Tool';
+import { createReminderTool, listRemindersTool, cancelReminderTool } from './ReminderTool';
+import { createTriggerTool, listTriggersTool, updateTriggerTool, deleteTriggerTool } from './TriggerTool';
 
 /**
- * Registry for managing AI tools. Currently initializes without any built-in tools
- * so that the agent can run even when optional integrations are not configured.
+ * Registry for managing AI tools.
+ * Registers built-in tools (reminders) and allows additional tools to be added.
  */
 export class ToolRegistry {
   private tools = new Map<string, ITool>();
 
   constructor() {
+    // Register built-in tools
+    this.registerBuiltInTools();
+    
     logInfo('Tool registry initialized', {
-      toolCount: this.tools.size
+      toolCount: this.tools.size,
+      tools: Array.from(this.tools.keys())
     });
+  }
+
+  private registerBuiltInTools(): void {
+    // Reminder tools
+    this.tools.set(createReminderTool.getDefinition().name, createReminderTool);
+    this.tools.set(listRemindersTool.getDefinition().name, listRemindersTool);
+    this.tools.set(cancelReminderTool.getDefinition().name, cancelReminderTool);
+
+    // Trigger tools
+    this.tools.set(createTriggerTool.getDefinition().name, createTriggerTool);
+    this.tools.set(listTriggersTool.getDefinition().name, listTriggersTool);
+    this.tools.set(updateTriggerTool.getDefinition().name, updateTriggerTool);
+    this.tools.set(deleteTriggerTool.getDefinition().name, deleteTriggerTool);
   }
 
   registerTool(tool: ITool): void {

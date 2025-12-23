@@ -11,9 +11,21 @@ docs/
 └── README.md          # You are here
 ```
 
+### Folder Descriptions
+
 - **CHANGELOG.md** – chronological record of shipped features and infra work.
 - **guides/** – curated walkthroughs: setup, migrations, quick-starts, structure primers.
 - **notes/** – scratch-space for research planning and exploratory findings.
 - **operations/** – concrete procedures (e.g., production deployment steps).
 - **templates/** – ready-to-use write-up formats for agent status updates and retros.
 - **logs/** – drop transient log files here when sharing incident context; keep the folder clean in git.
+
+### Related Documentation
+
+| Location | Purpose |
+|----------|---------|
+| `/README.md` | Project overview and getting started |
+| `/IMPLEMENTATION_PLAN.md` | Master implementation plan with all phases |
+| `/findings/` | Research analysis and technical findings |
+| `/architecture/` | System design and hosting analysis |
+| `/deployment/` | Infrastructure and deploy scripts |

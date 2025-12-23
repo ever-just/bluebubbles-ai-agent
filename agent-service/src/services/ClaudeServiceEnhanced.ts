@@ -1,4 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
 import { ServiceResponse } from '../types';
 import { config } from '../config';
@@ -6,6 +8,17 @@ import { ProcessedMessage } from '../handlers/MessageHandler';
 import { getToolRegistry } from '../tools/ToolRegistry';
 import { ToolExecutionContext } from '../tools/Tool';
 import { getAnthropicRequestManager } from './AnthropicRequestManager';
+
+// Load Grace system prompt from markdown file
+const GRACE_PROMPT_PATH = join(__dirname, '../agents/prompts/grace_system_prompt.md');
+let GRACE_SYSTEM_PROMPT: string;
+try {
+  GRACE_SYSTEM_PROMPT = readFileSync(GRACE_PROMPT_PATH, 'utf-8');
+  logInfo('Loaded Grace system prompt from file', { path: GRACE_PROMPT_PATH });
+} catch (error) {
+  logWarn('Failed to load Grace system prompt from file, using fallback', { error });
+  GRACE_SYSTEM_PROMPT = '';
+}
 
 const MODEL_ALIAS_MAP: Record<string, string> = {
   'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
@@ -108,7 +121,8 @@ export class ClaudeServiceEnhanced {
       const combinedTools = [...toolDefinitions, ...serverTools];
       const toolsPayload = combinedTools.length > 0 ? (combinedTools as any) : undefined;
 
-      const finalSystemPrompt = systemPrompt || this.buildAgentGracePrompt();
+      const basePrompt = systemPrompt || this.buildAgentGracePrompt();
+      const finalSystemPrompt = this.buildDynamicSystemPrompt(basePrompt, toolContext.runtimeContext);
       
       logInfo('Tools available for Claude', {
         toolCount: combinedTools.length,
@@ -510,29 +524,91 @@ export class ClaudeServiceEnhanced {
   }
 
   /**
-   * Agent Grace system prompt
+   * Build dynamic system prompt by appending runtime context to static prompt.
+   */
+  private buildDynamicSystemPrompt(
+    staticPrompt: string,
+    runtimeContext?: any
+  ): string {
+    if (!runtimeContext) {
+      return staticPrompt;
+    }
+
+    const contextSections: string[] = [];
+
+    // Current datetime
+    if (runtimeContext.currentDatetime) {
+      contextSections.push(`**Current DateTime**: ${runtimeContext.currentDatetime}`);
+    }
+
+    // User profile
+    if (runtimeContext.userProfile) {
+      const profile = Object.entries(runtimeContext.userProfile)
+        .filter(([_, v]) => v)
+        .map(([k, v]) => `- ${k}: ${v}`)
+        .join('\n');
+      if (profile) {
+        contextSections.push(`**User Profile**:\n${profile}`);
+      }
+    }
+
+    // User preferences
+    if (runtimeContext.userPreferences?.length) {
+      contextSections.push(`**User Preferences**:\n${runtimeContext.userPreferences.map((p: string) => `- ${p}`).join('\n')}`);
+    }
+
+    // Memory highlights
+    if (runtimeContext.memoryHighlights?.length) {
+      contextSections.push(`**Memory Highlights**:\n${runtimeContext.memoryHighlights.map((m: string) => `- ${m}`).join('\n')}`);
+    }
+
+    // Conversation summary
+    if (runtimeContext.conversationSummary) {
+      contextSections.push(`**Conversation Summary**:\n${runtimeContext.conversationSummary}`);
+    }
+
+    // Active tasks
+    if (runtimeContext.activeTasks?.length) {
+      contextSections.push(`**Active Tasks**:\n${runtimeContext.activeTasks.map((t: string) => `- ${t}`).join('\n')}`);
+    }
+
+    // Active reminders
+    if (runtimeContext.activeReminders?.length) {
+      contextSections.push(`**Active Reminders**:\n${runtimeContext.activeReminders.map((r: string) => `- ${r}`).join('\n')}`);
+    }
+
+    if (contextSections.length === 0) {
+      return staticPrompt;
+    }
+
+    return `${staticPrompt}\n\n---\n\n## CURRENT SESSION CONTEXT\n\n${contextSections.join('\n\n')}`;
+  }
+
+  /**
+   * Agent Grace system prompt - loaded from external markdown file
    */
   private buildAgentGracePrompt(): string {
+    if (GRACE_SYSTEM_PROMPT) {
+      return GRACE_SYSTEM_PROMPT;
+    }
+
+    // Fallback prompt if file loading failed - matches grace_system_prompt.md tone
     return `You are Grace, an executive assistant for Weldon Makori, CEO of EverJust.
 
 Core voice:
-- Sound like a smart, caring professional peer.
-- Default to short, direct bubbles (1-2 sentences). Only go long when the topic truly needs detail.
-- Mirror the user's energy while keeping things calm and confident. No over-apologizing, no corporate fluff.
+- Text like a smart friend, not a corporate assistant.
+- Default to under 100 characters. Only go long when delivering info they asked for.
+- Mirror the user's energy. Lowercase is fine. No over-apologizing or fluff.
 
-Message cadence:
-- Treat responses like iMessage bubbles. If you need multiple bubbles, separate them with the delimiter "||" on its own line. Example: "got it||sending calendar invite now" creates two bubbles.
-- Avoid sending more than three bubbles unless critical context requires it. Prioritize the most helpful points first.
-- Reactions or quick acknowledgements are welcome when they replace a redundant bubble (e.g., "👍" style acknowledgement expressed as a concise text).
+Message format:
+- Keep it short - think text message, not email.
+- Use || on its own line to split into separate bubbles (max 3).
+- No emojis unless the user uses them first.
 
-Dynamic length:
-- Default to concise replies. Expand only when you're clarifying a plan, summarizing research, or the user explicitly asks for detail.
-- When offering longer info, lead with a short headline bubble so the user knows what to expect.
-
-General rules:
-- Acknowledge the user's message, respond naturally, and propose next steps when helpful.
-- Use tools when appropriate but keep the surface chat simple. Only mention tool usage if transparency will help.
-- Never mention internal delimiters ("||") unless you are intentionally creating multiple bubbles.`;
+Rules:
+- Match your response length to the user's message length.
+- If user sends multiple messages, read them as one thought and respond once.
+- Use tools when needed but keep responses simple.`;
   }
 }
 
