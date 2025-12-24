@@ -169,16 +169,19 @@ app.post('/webhook/messages', async (req, res) => {
         return false;
       })();
 
-      logDebug('Webhook is_from_me evaluation', {
+      logInfo('Webhook is_from_me evaluation', {
         guid: data.guid,
         rawIsFromMe,
-        interpreted: isFromMe
+        rawType: typeof rawIsFromMe,
+        interpreted: isFromMe,
+        textPreview: data.text?.substring(0, 60)
       });
 
       if (isFromMe) {
-        logInfo('Ignoring self-sent BlueBubbles webhook message', {
+        logInfo('✅ FILTERED: Ignoring self-sent BlueBubbles webhook message', {
           guid: data.guid,
-          textPreview: data.text?.substring(0, 60)
+          textPreview: data.text?.substring(0, 60),
+          is_from_me: isFromMe
         });
         return res.json({ success: true, message: 'Ignored self-sent message' });
       }

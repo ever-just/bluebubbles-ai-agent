@@ -75,7 +75,19 @@ export class BlueBubblesClient extends EventEmitter {
 
     // Message events
     this.socket.on('new-message', (data: BlueBubblesMessage) => {
-      logInfo('New message received (new-message event)', { guid: data.guid });
+      // Log full message data to check for account_guid, account_login fields
+      logInfo('New message received (new-message event)', { 
+        guid: data.guid,
+        // Check for account-related fields that might indicate which address received the message
+        account: (data as any).account,
+        account_guid: (data as any).account_guid,
+        account_login: (data as any).account_login,
+        account_id: (data as any).account_id,
+        destination_caller_id: (data as any).destination_caller_id,
+        // Also log chat info
+        chat_id: data.chat_id,
+        service: data.service
+      });
       this.emit('message', data);
     });
 

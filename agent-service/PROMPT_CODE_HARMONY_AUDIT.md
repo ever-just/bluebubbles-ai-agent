@@ -1,8 +1,8 @@
 # Prompt-to-Code Harmony Audit
 
 **Audit Date**: December 22, 2025  
-**Last Updated**: December 22, 2025 (9:55 PM CST)  
-**Status**: ✅ Complete (v2 - Post-Testing Updates)
+**Last Updated**: December 23, 2025 (7:55 PM CST)  
+**Status**: 🟡 NOOP + Reaction System Designed (v4 - See Section 10)
 
 ---
 
@@ -15,6 +15,9 @@
 5. [Final Harmony Status](#5-final-harmony-status)
 6. [Post-Testing Fixes (v2)](#6-post-testing-fixes-v2)
 7. [Areas Requiring Further Review](#7-areas-requiring-further-review)
+8. [Summary of All Changes](#8-summary-of-all-changes)
+9. [Issues Discovered (December 23, 2025) - v3](#9-issues-discovered-december-23-2025---v3)
+10. [NOOP + Tapback Reaction System (v4)](#10-noop--tapback-reaction-system-v4)
 
 ---
 
@@ -350,4 +353,274 @@ The system prompt should be updated to reflect new behaviors:
 2. Monitor logs for rate limiter triggers
 3. Consider cleaning corrupted conversation history from database
 4. Add group chat support if needed
+
+---
+
+## 9. Issues Discovered (December 23, 2025) - v3
+
+**Audit Date**: December 23, 2025  
+**Status**: 🔴 Critical Issues Found - Requires Immediate Action
+
+After continued testing on December 23, 2025, several critical issues were discovered that require immediate attention.
+
+### 9.1 Critical Issues Found
+
+| # | Issue | Severity | Evidence | Root Cause |
+|---|-------|----------|----------|------------|
+| 1 | **Agent still sees duplicates in conversation** | 🔴 Critical | Agent says "seeing 'How about now' four times total", "repeated 4 times" | Database has 40,646 messages with massive duplication; deduplication only happens at fetch time, not cleanup |
+| 2 | **Paragraphs not splitting into bubbles** | 🔴 Critical | Logs show `\n\n` in messages instead of `\|\|` | Claude outputs newlines instead of `\|\|` delimiter; prompt updated but not effective |
+| 3 | **HTTP polling 404 errors** | 🟡 Medium | `API Error: [404] Message does not exist!` | Added `/api/v1/message/query` endpoint that doesn't exist in BlueBubbles API |
+| 4 | **Wrong role saved in database** | 🔴 Critical | 2,960 instances of error messages saved as `user` role | Error messages like "I'm having trouble processing..." saved with wrong role |
+| 5 | **Database corruption from previous loops** | 🔴 Critical | Same message appears 8+ times in database | Previous echo loops created persistent duplicates that weren't cleaned |
+
+### 9.2 Prompt → Code Alignment Issues (NEW)
+
+| Prompt Feature | Code Location | Expected | Actual | Status |
+|----------------|---------------|----------|--------|--------|
+| "Use `\|\|` to split into bubbles" (line 41) | `MessageRouter.ts:999-1028` | Claude outputs `\|\|` | Claude outputs `\n\n` | 🔴 MISALIGNED |
+| "max 3 bubbles" (line 63) | `config/index.ts:102` | 3 bubbles max | Often 1 bubble with paragraphs | 🔴 MISALIGNED |
+| "CRITICAL: Newlines vs Bubbles" (lines 38-68) | N/A | Claude understands difference | Claude uses newlines for everything | 🔴 NOT WORKING |
+
+### 9.3 Code → Prompt Alignment Issues (NEW)
+
+| Code Feature | Location | Prompt Reference | Status |
+|--------------|----------|------------------|--------|
+| `saveMessage()` duplicate check | `MessageRouter.ts:1535-1558` | NOT in prompt | ⚠️ NEW - Added Dec 23 |
+| `getConversationHistory()` deduplication | `MessageRouter.ts:1542-1556` | NOT in prompt | ⚠️ NEW - Added Dec 23 |
+| HTTP polling `/api/v1/message/query` | `MessageRouter.ts:632` | NOT in prompt | 🔴 BROKEN - Reverted |
+| `globalOutboundCache` in `sendBlueBubblesMessage` | `MessageRouter.ts:1166-1175` | NOT in prompt | ⚠️ NEW - Added Dec 23 |
+
+### 9.4 Database State Issues
+
+| Issue | Count | Impact |
+|-------|-------|--------|
+| Total messages in database | 40,646 | Massive bloat affecting performance |
+| "I'm having trouble processing..." as `user` role | 2,960 | Corrupted history, wrong persona |
+| "Hey" duplicates | 281 | Polluted context |
+| "I apologize for the confusion..." duplicates | 800+ | Wrong persona appearing in history |
+| Same message repeated 8+ times | Many | Agent sees and reports duplicates |
+
+### 9.5 Prompt Clarity Issues
+
+| Section | Current Text | Problem | Recommendation |
+|---------|--------------|---------|----------------|
+| Lines 38-68 (Newlines vs Bubbles) | Added Dec 23 | Claude still not using `\|\|` | Need MUCH stronger instruction |
+| Line 40-41 | Explains `\n\n` vs `\|\|` | Too abstract, easily ignored | Add: "ALWAYS use `\|\|`. NEVER use blank lines to split." |
+| Examples section | Shows `\|\|` usage | Not enough negative examples | Add "❌ WRONG" vs "✅ RIGHT" examples |
+
+### 9.6 Recommended Actions
+
+| Priority | Action | File(s) | Description | Status |
+|----------|--------|---------|-------------|--------|
+| 🔴 P0 | **Clean database** | `scripts/cleanup-duplicate-messages.sql` | Remove 40,000+ duplicate messages | ✅ DONE (Dec 23, 2:37 PM) - Deleted 29,706 duplicates |
+| 🔴 P0 | **Restart agent** | N/A | Pick up reverted HTTP polling fix | ✅ DONE (Dec 23, 2:38 PM) |
+| 🔴 P0 | **Strengthen bubble delimiter prompt** | `grace_system_prompt.md` | Make `||` instruction impossible to ignore | ✅ DONE (Dec 23, 2:37 PM) - Added WRONG/RIGHT examples |
+| 🟡 P1 | **Fix wrong role in database** | SQL script | Update error messages from `user` to `assistant` | ⏳ PENDING |
+| 🟡 P1 | **Add negative examples to prompt** | `grace_system_prompt.md` | Show "❌ Don't do this" vs "✅ Do this" | ✅ DONE (included in P0 fix) |
+| 🟢 P2 | **Verify prompt loading** | `ClaudeServiceEnhanced.ts` | Add logging to confirm prompt file is read | ⏳ PENDING |
+
+### 9.7 Testing Gaps (Updated)
+
+| Test Case | Status | Notes |
+|-----------|--------|-------|
+| `\|\|` delimiter splitting | 🔴 FAILING | Claude not using delimiter |
+| Database deduplication at save | ⚠️ UNTESTED | Added Dec 23 but not verified |
+| Database deduplication at fetch | ⚠️ UNTESTED | Added Dec 23 but not verified |
+| HTTP polling | 🔴 REVERTED | Wrong endpoint, code reverted |
+| Duplicate message detection | 🟡 PARTIAL | Works for new messages, old duplicates remain |
+
+### 9.8 Summary of Current State
+
+**What's Working:**
+- ✅ Webhook message delivery
+- ✅ `is_from_me` filtering in webhook handler
+- ✅ Startup protection (10-second grace period)
+- ✅ Response rate limiting
+- ✅ Tool registration and execution
+
+**What's Broken:**
+- 🔴 Claude not using `||` for bubble splitting
+- 🔴 Database full of duplicate messages (40,646 total)
+- 🔴 Agent sees duplicates because database is polluted
+- 🔴 HTTP polling was hitting non-existent endpoint (reverted)
+- 🔴 Error messages saved with wrong role
+
+**Root Causes:**
+1. **Prompt not strong enough** - Claude ignores `||` guidance and uses `\n\n`
+2. **Database never cleaned** - Previous loops created persistent duplicates
+3. **Deduplication is reactive, not proactive** - Filters at fetch time but doesn't clean source
+
+---
+
+## 10. NOOP + Tapback Reaction System (v4)
+
+**Design Date**: December 23, 2025  
+**Status**: 🟡 Designed - Pending Implementation
+
+This section documents a new complementary system that allows the agent to:
+1. **NOOP** - Choose not to send a text response when appropriate
+2. **REACT** - Send iMessage tapback reactions to user messages
+
+### 10.1 Problem Statement
+
+Currently, the agent is forced to respond to every message, even when:
+- User sends simple acknowledgments ("ok", "k", "👍")
+- User sends gratitude ("thanks!")
+- User sends conversation closers ("ttyl", "bye")
+- User is thinking aloud ("hmm", "let me think")
+- A tapback reaction would be more natural than text
+
+This creates unnatural conversation flow and notification fatigue.
+
+### 10.2 Solution: NOOP + REACT Markers
+
+The agent can output special markers to control response behavior:
+
+| Marker | Format | Behavior |
+|--------|--------|----------|
+| `[NOOP]` | `[NOOP]` or `[NOOP: reason]` | Don't send any text response |
+| `[REACT: type]` | `[REACT: love]`, `[REACT: like]`, etc. | Send tapback reaction to user's message |
+
+**Combinations:**
+- `[NOOP]` alone → No reaction, no text (silent)
+- `[REACT: love][NOOP]` → Send reaction, no text
+- `[REACT: love]\nyooo congrats!!` → Send reaction AND text
+- `yooo congrats!!` → Text only (current behavior)
+
+### 10.3 Tapback Reaction Types
+
+| Type | iMessage ID | Emoji | When to Use |
+|------|-------------|-------|-------------|
+| `love` | 2000 | ❤️ | Good news, gratitude, accomplishments, empathy |
+| `like` | 2001 | 👍 | Acknowledgments, confirmations, agreements |
+| `dislike` | 2002 | 👎 | Negative reports (use sparingly) |
+| `laugh` | 2003 | 😂 | Humor, jokes, funny messages |
+| `emphasize` | 2004 | ‼️ | Important/urgent messages |
+| `question` | 2005 | ❓ | Confusing messages (rarely appropriate) |
+
+### 10.4 NOOP Scenarios
+
+| User Message Pattern | Agent Response | Rationale |
+|---------------------|----------------|-----------|
+| "ok", "k", "got it" | `[REACT: like][NOOP]` | Acknowledgment - react, don't text |
+| "👍", "👌", "🙏" | `[REACT: like][NOOP]` | Emoji acknowledgment |
+| "thanks!", "ty" | `[REACT: love][NOOP]` | Gratitude - heart reaction |
+| "ttyl", "bye", "gn" | `[REACT: love][NOOP]` | Goodbye - warm reaction |
+| "lol", "haha", "😂" | `[REACT: laugh][NOOP]` | Humor - laugh reaction |
+| "perfect", "awesome" | `[REACT: love][NOOP]` | Positive feedback |
+| "hmm", "let me think" | `[NOOP]` | User thinking - stay silent |
+| "actually nvm" | `[NOOP]` | Self-correction - stay silent |
+| "Liked [message]" | `[NOOP]` | User's tapback - no response needed |
+
+### 10.5 Reaction + Text Scenarios
+
+| User Message | Agent Response | Rationale |
+|--------------|----------------|-----------|
+| "got the job!" | `[REACT: love]\nyooo congrats!!` | Celebrate with reaction + text |
+| "had a rough day" | `[REACT: love]\nwhat happened?` | Empathy + follow-up |
+| "check this out [link]" | `[REACT: like]\nlooking now` | Acknowledge + status |
+
+### 10.6 Prompt → Code Mapping (NEW)
+
+| Prompt Feature | Prompt Location | Code Location | Implementation | Status |
+|----------------|-----------------|---------------|----------------|--------|
+| `[NOOP]` marker | New section after line 228 | `MessageRouter.ts` | `isNoopResponse()` | ⏳ PENDING |
+| `[NOOP: reason]` with reason | Same section | `MessageRouter.ts` | `extractNoopReason()` | ⏳ PENDING |
+| `[REACT: love]` | New section | `MessageRouter.ts` | `parseReactionFromResponse()` | ⏳ PENDING |
+| `[REACT: like]` | Same | Same | Same | ⏳ PENDING |
+| `[REACT: laugh]` | Same | Same | Same | ⏳ PENDING |
+| `[REACT: emphasize]` | Same | Same | Same | ⏳ PENDING |
+| Reaction + text combo | Same | `MessageRouter.ts` | `extractResponseComponents()` | ⏳ PENDING |
+| Reaction + NOOP combo | Same | Same | Same | ⏳ PENDING |
+| NOOP scenarios | Same | N/A | Prompt-only guidance | ⏳ PENDING |
+| Reaction scenarios | Same | N/A | Prompt-only guidance | ⏳ PENDING |
+
+### 10.7 Code → Prompt Mapping (NEW)
+
+| Code Feature | Code Location | Prompt Reference | Status |
+|--------------|---------------|------------------|--------|
+| `ReactionType` enum | `types/index.ts` | "Tapback Reaction Types" section | ⏳ PENDING |
+| `sendReaction()` | `BlueBubblesClient.ts` | "REACT marker" section | ⏳ PENDING |
+| `isNoopResponse()` | `MessageRouter.ts` | "NOOP marker" section | ⏳ PENDING |
+| `parseReactionFromResponse()` | `MessageRouter.ts` | "REACT marker" section | ⏳ PENDING |
+| `extractResponseComponents()` | `MessageRouter.ts` | "Response Format" section | ⏳ PENDING |
+| NOOP metadata in DB | `MessageRouter.ts` | N/A (internal) | ⏳ PENDING |
+| Skip rate limit on NOOP | `MessageRouter.ts` | N/A (internal) | ⏳ PENDING |
+
+### 10.8 Interaction with Existing Features
+
+| Existing Feature | Interaction | Resolution |
+|------------------|-------------|------------|
+| `prepareAssistantMessages()` | Must run AFTER NOOP/REACT extraction | Extract markers first, then process remaining text |
+| `\|\|` bubble splitting | Only applies to text portion | Markers stripped before splitting |
+| `maxResponseBurst: 3` | Only counts text bubbles | Reaction is separate |
+| Echo detection | NOOP has no text to echo | No conflict |
+| Rate limiting | NOOP should not count | Skip rate limit increment for NOOP |
+| Database save | Save NOOP/REACT with metadata | Add `metadata.noop` and `metadata.reaction` |
+| Dual-agent `wait` tool | Similar to NOOP | NOOP for single-agent; `wait` for dual-agent |
+
+### 10.9 Edge Cases
+
+| Edge Case | Handling |
+|-----------|----------|
+| `[NOOP]` + other text | Treat as regular response (not a NOOP) |
+| `[REACT: invalid]` | Log warning, skip reaction, process text normally |
+| Multiple `[REACT: ...]` | Use first one only |
+| `[REACT: ...]` in middle of text | Only parse if at start of response |
+| Reaction API fails | Log error, continue with text if present |
+| No message GUID available | Skip reaction, log warning |
+| `[noop]` lowercase | Case-insensitive match |
+| Whitespace around markers | Trim before checking |
+
+### 10.10 Implementation Checklist
+
+#### Prompt Changes
+
+| # | Change | Location | Status |
+|---|--------|----------|--------|
+| 1 | Add "WHEN NOT TO RESPOND" section | After line 228 | ⏳ |
+| 2 | Document `[NOOP]` format | New section | ⏳ |
+| 3 | Document `[NOOP: reason]` format | New section | ⏳ |
+| 4 | Add "TAPBACK REACTIONS" section | After NOOP section | ⏳ |
+| 5 | Document `[REACT: type]` format | New section | ⏳ |
+| 6 | List all reaction types | New section | ⏳ |
+| 7 | Add decision tree | New section | ⏳ |
+| 8 | Add scenario examples | New section | ⏳ |
+| 9 | Update line 128 example to use `[NOOP]` | Line 128 | ⏳ |
+| 10 | Clarify emoji text vs tapback | Near line 111 | ⏳ |
+
+#### Code Changes
+
+| # | Change | File | Status |
+|---|--------|------|--------|
+| 1 | Add `ReactionType` type | `types/index.ts` | ⏳ |
+| 2 | Add `sendReaction()` method | `BlueBubblesClient.ts` | ⏳ |
+| 3 | Add `isNoopResponse()` function | `MessageRouter.ts` | ⏳ |
+| 4 | Add `parseReactionFromResponse()` function | `MessageRouter.ts` | ⏳ |
+| 5 | Add `extractResponseComponents()` function | `MessageRouter.ts` | ⏳ |
+| 6 | Modify response handling | `MessageRouter.ts:918-953` | ⏳ |
+| 7 | Add NOOP logging | `MessageRouter.ts` | ⏳ |
+| 8 | Add reaction logging | `MessageRouter.ts` | ⏳ |
+| 9 | Update `saveMessage()` metadata | `MessageRouter.ts` | ⏳ |
+| 10 | Skip rate limit on NOOP | `MessageRouter.ts` | ⏳ |
+
+### 10.11 Testing Plan
+
+| Test Case | Expected Behavior | Status |
+|-----------|-------------------|--------|
+| User: "ok" | Agent: `[REACT: like][NOOP]` → 👍 reaction, no text | ⏳ |
+| User: "thanks!" | Agent: `[REACT: love][NOOP]` → ❤️ reaction, no text | ⏳ |
+| User: "got the job!" | Agent: `[REACT: love]\ncongrats!!` → ❤️ + text | ⏳ |
+| User: "what time?" | Agent: `3pm` → text only | ⏳ |
+| User: "hmm let me think" | Agent: `[NOOP]` → silent | ⏳ |
+| User: "lol" | Agent: `[REACT: laugh][NOOP]` → 😂 reaction | ⏳ |
+| Reaction API fails | Log error, send text if present | ⏳ |
+| NOOP doesn't trigger rate limit | Rate limit counter unchanged | ⏳ |
+
+### 10.12 Rollback Plan
+
+If issues arise:
+1. Remove `[NOOP]` and `[REACT]` sections from prompt
+2. Revert `MessageRouter.ts` changes
+3. Keep `sendReaction()` in BlueBubblesClient for future use
 

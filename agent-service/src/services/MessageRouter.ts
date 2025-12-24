@@ -619,13 +619,14 @@ export class MessageRouter {
   }
 
   private startMessagePolling(): void {
-    // HTTP polling for new messages (works without Private API)
+    // HTTP polling to check BlueBubbles server availability
+    // Note: Message fetching via /api/v1/message/query is not available in BlueBubbles
+    // Messages are delivered via webhooks and WebSocket events
     setInterval(async () => {
       if (this.blueBubblesPollingDisabled) {
         return;
       }
 
-      console.log('🔄 HTTP POLLING: Checking BlueBubbles API availability...');
       try {
         // Test basic API connectivity
         const serverInfoUrl = new URL('/api/v1/server/info', config.bluebubbles.url.endsWith('/') ? config.bluebubbles.url : `${config.bluebubbles.url}/`);
@@ -634,30 +635,24 @@ export class MessageRouter {
         const serverResponse = await fetch(serverInfoUrl.toString());
         if (serverResponse.ok) {
           await serverResponse.json();
-          console.log('🔄 HTTP POLLING: BlueBubbles API accessible');
-
-          // TODO: Implement message detection when API endpoints become available
-          // For now, we rely on manual message injection via /api/test-message
-          // or webhook injection when Private API compatibility is resolved
-
-          console.log('🔄 HTTP POLLING: Ready for manual message injection');
+          logDebug('HTTP polling: BlueBubbles API accessible');
         } else if (serverResponse.status === 401) {
-          logError('BlueBubbles API authentication failed - disabling HTTP polling until credentials are corrected');
+          logError('BlueBubbles API authentication failed - disabling HTTP polling');
           this.blueBubblesPollingDisabled = true;
         } else {
-          console.log('🔄 HTTP POLLING: BlueBubbles API not accessible');
+          logDebug('HTTP polling: BlueBubbles API returned non-OK status', { status: serverResponse.status });
         }
       } catch (error) {
         if ((error as Error)?.message?.includes('401')) {
-          logError('BlueBubbles API authentication failed - disabling HTTP polling until credentials are corrected', error);
+          logError('BlueBubbles API authentication failed - disabling HTTP polling', error);
           this.blueBubblesPollingDisabled = true;
           return;
         }
-        console.log('🔄 HTTP POLLING: Network error:', (error as Error).message);
+        logDebug('HTTP polling: Network error', { error: (error as Error).message });
       }
     }, 30000); // Check every 30 seconds
 
-    logInfo('HTTP polling started - manual message injection available via /api/test-message');
+    logInfo('HTTP polling started - checking server availability every 30 seconds');
   }
 
   async handleIncomingMessage(bbMessage: BlueBubblesMessage): Promise<void> {
@@ -689,7 +684,10 @@ export class MessageRouter {
 
       // Skip if message is from the AI (sent by us)
       if (bbMessage.is_from_me) {
-        logDebug('Skipping self-sent message (flagged by BlueBubbles)');
+        logInfo('Skipping self-sent message (is_from_me=true)', {
+          guid: bbMessage.guid,
+          textPreview: bbMessage.text?.substring(0, 50)
+        });
         return;
       }
 
@@ -999,13 +997,12 @@ export class MessageRouter {
   }
 
   private prepareAssistantMessages(content: string): string[] {
-    const delimiterPattern = /\s*\|\|\s*/;
+    // Split on EITHER || delimiter OR double newlines (paragraph breaks)
+    // This ensures messages get split regardless of whether Claude uses || or \n\n
+    const delimiterPattern = /\s*\|\|\s*|\n\n+/;
     const maxCharPerBubble = 500; // Allow longer messages for informational content
     
-    // Normalize excessive newlines (3+ newlines -> 2 newlines)
-    const normalizedContent = content.replace(/\n{3,}/g, '\n\n');
-    
-    const parts = normalizedContent
+    const parts = content
       .split(delimiterPattern)
       .map(part => part.trim())
       .filter(part => part.length > 0);
@@ -1161,6 +1158,17 @@ export class MessageRouter {
     if (!config.bluebubbles.sendEnabled) {
       logWarn('BlueBubbles sending disabled via config - skipping outbound message', { chatGuid, context });
       return;
+    }
+
+    // ALWAYS record outbound messages globally to prevent echo processing
+    const normalized = this.normalizeMessageText(text);
+    if (normalized) {
+      this.globalOutboundCache.set(normalized, Date.now());
+      logDebug('Recorded outbound message in global cache', {
+        textPreview: normalized.substring(0, 50),
+        chatGuid,
+        conversationId
+      });
     }
 
     if (conversationId) {
@@ -1476,6 +1484,31 @@ export class MessageRouter {
     content: string,
     metadata: MessageMetadata = {}
   ): Promise<Message> {
+    // Check for duplicate content within recent messages (prevent saving same message twice)
+    const recentDuplicate = await this.messageRepo.findOne({
+      where: {
+        conversationId,
+        role,
+        content
+      },
+      order: { createdAt: 'DESC' }
+    });
+    
+    if (recentDuplicate) {
+      const ageMs = Date.now() - recentDuplicate.createdAt.getTime();
+      // If identical message exists within last 5 minutes, skip saving
+      if (ageMs < 5 * 60_000) {
+        logInfo('Skipping duplicate message save', {
+          role,
+          conversationId,
+          contentPreview: content.substring(0, 50),
+          existingMessageId: recentDuplicate.id,
+          ageMs
+        });
+        return recentDuplicate;
+      }
+    }
+    
     const message = this.messageRepo.create({
       userId,
       conversationId,
@@ -1499,16 +1532,32 @@ export class MessageRouter {
     const messages = await this.messageRepo.find({
       where: { conversationId },
       order: { createdAt: 'DESC' }, // Get most recent first
-      take: limit * 2 // Fetch extra to account for filtered messages
+      take: limit * 3 // Fetch extra to account for filtered and deduplicated messages
     });
 
     // Filter out corrupted/problematic messages
-    const filtered = messages
-      .filter(msg => this.isValidHistoryMessage(msg))
-      .slice(0, limit) // Take only what we need
-      .reverse(); // Restore chronological order
+    const validMessages = messages.filter(msg => this.isValidHistoryMessage(msg));
+    
+    // Deduplicate by content - keep only the most recent occurrence of each unique content
+    const seenContent = new Set<string>();
+    const deduplicated = validMessages.filter(msg => {
+      const normalized = msg.content.trim().toLowerCase();
+      if (seenContent.has(normalized)) {
+        logDebug('Removing duplicate message from history', {
+          conversationId,
+          role: msg.role,
+          contentPreview: msg.content.substring(0, 50)
+        });
+        return false;
+      }
+      seenContent.add(normalized);
+      return true;
+    });
+    
+    // Take only what we need and restore chronological order
+    const limited = deduplicated.slice(0, limit).reverse();
 
-    return filtered.map(msg => ({
+    return limited.map(msg => ({
       role: msg.role,
       content: msg.content
     }));
