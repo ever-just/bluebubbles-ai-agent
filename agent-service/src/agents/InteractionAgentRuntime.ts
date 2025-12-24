@@ -9,6 +9,39 @@ import { config } from '../config';
 const MAX_TOOL_ITERATIONS = 8;
 
 /**
+ * Build server-side tool definitions (web_search, web_fetch) if enabled.
+ */
+function buildServerTools(): Array<{ type: string; name: string; max_uses?: number }> {
+  const tools: Array<{ type: string; name: string; max_uses?: number }> = [];
+  const model = config.anthropic.model || 'claude-sonnet-4-20250514';
+  
+  // Check if model supports web search
+  const supportsWebSearch = [
+    'claude-3-5-haiku', 'claude-haiku-4-5', 'claude-sonnet-4-5',
+    'claude-sonnet-4', 'claude-3-7-sonnet', 'claude-opus-4-1', 'claude-opus-4'
+  ].some(pattern => model.includes(pattern));
+  
+  if (config.anthropic.enableWebSearch && supportsWebSearch) {
+    tools.push({
+      type: 'web_search_20250305',
+      name: 'web_search',
+      max_uses: config.anthropic.webSearchMaxUses ?? 5
+    });
+  }
+  
+  return tools;
+}
+
+/**
+ * Strip citation markup from web search responses.
+ * Removes <cite index="...">...</cite> tags, keeping only the text content.
+ */
+function stripCitations(text: string): string {
+  // Remove <cite index="...">...</cite> tags, keeping inner text
+  return text.replace(/<cite[^>]*>(.*?)<\/cite>/gi, '$1').trim();
+}
+
+/**
  * Result from interaction agent processing.
  */
 export interface InteractionResult {
@@ -31,6 +64,8 @@ export class InteractionAgentRuntime {
   private iMessageAdapter: iMessageAdapter;
   private context: ToolExecutionContext;
   private chatGuid: string;
+  private lastUserMessageGuid: string;
+  private lastUserMessageText: string;  // Store text for debugging reaction targets
   private conversationHistory: Array<{ role: string; content: string }>;
 
   constructor(
@@ -38,11 +73,15 @@ export class InteractionAgentRuntime {
     userId: string,
     chatGuid: string,
     context: ToolExecutionContext,
-    conversationHistory: Array<{ role: string; content: string }> = []
+    conversationHistory: Array<{ role: string; content: string }> = [],
+    lastUserMessageGuid: string = '',
+    lastUserMessageText: string = ''  // Store text for debugging reaction targets
   ) {
     this.agent = createInteractionAgent(conversationId, userId);
     this.context = context;
     this.chatGuid = chatGuid;
+    this.lastUserMessageGuid = lastUserMessageGuid;
+    this.lastUserMessageText = lastUserMessageText;
     this.conversationHistory = conversationHistory;
     
     this.anthropic = new Anthropic({
@@ -104,26 +143,53 @@ export class InteractionAgentRuntime {
 
         logDebug('InteractionAgentRuntime iteration', { iteration: iterationCount });
 
-        // Call Claude with interaction tools
+        // Build tools array with both interaction tools and server-side tools
+        const serverTools = buildServerTools();
+        const allTools = [
+          ...INTERACTION_AGENT_TOOLS,
+          ...serverTools
+        ];
+        
+        // Call Claude with interaction tools + server-side tools (web_search)
         const response = await this.anthropic.messages.create({
           model: config.anthropic.model || 'claude-sonnet-4-20250514',
           max_tokens: config.anthropic.responseMaxTokens || 1024,
           system: systemPrompt,
-          tools: INTERACTION_AGENT_TOOLS as any,
+          tools: allTools as any,
           messages
         });
 
-        // Check for tool use
+        // Log all content block types for debugging
+        logDebug('Response content blocks', {
+          types: response.content.map((b: any) => b.type),
+          stopReason: response.stop_reason
+        });
+        
+        // Check for server tool use (web_search) - these are executed by Anthropic
+        const serverToolBlocks = response.content.filter(
+          (block: any) => block.type === 'server_tool_use'
+        );
+        
+        // Check for client tool use (our custom tools)
         const toolUseBlocks = response.content.filter(
           (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
         );
+        
+        // If web_search server tool is being used, notify user immediately
+        const hasWebSearch = serverToolBlocks.some((block: any) => block.name === 'web_search');
+        if (hasWebSearch) {
+          logInfo('Web search server tool detected - notifying user');
+          await this.iMessageAdapter.sendToUser('🔍 searching...', this.chatGuid, true);
+          messagesSent.push('🔍 searching...');
+        }
 
-        // If no tool use, we're done
+        // If no client tool use, we're done (server tools are handled automatically)
         if (toolUseBlocks.length === 0) {
           logInfo('InteractionAgentRuntime completed (no more tools)', {
             iterationCount,
             messagesSent: messagesSent.length,
-            agentsSpawned: agentsSpawned.length
+            agentsSpawned: agentsSpawned.length,
+            hadServerTools: serverToolBlocks.length > 0
           });
 
           return {
@@ -134,7 +200,7 @@ export class InteractionAgentRuntime {
             iterationCount
           };
         }
-
+        
         // Process tool calls
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
@@ -152,9 +218,11 @@ export class InteractionAgentRuntime {
 
             switch (data.type) {
               case 'send_to_user':
-                // Send message via iMessage
-                await this.iMessageAdapter.sendToUser(data.message, this.chatGuid);
-                messagesSent.push(data.message);
+                // Send message via iMessage (skipTyping=true because MessageRouter manages typing)
+                // Strip any citation markup from web search responses
+                const cleanMessage = stripCitations(data.message);
+                await this.iMessageAdapter.sendToUser(cleanMessage, this.chatGuid, true);
+                messagesSent.push(cleanMessage);
                 toolResults.push({
                   type: 'tool_result',
                   tool_use_id: toolUse.id,
@@ -186,6 +254,44 @@ export class InteractionAgentRuntime {
                   tool_use_id: toolUse.id,
                   content: `Waiting: ${data.reason}`
                 });
+                break;
+
+              case 'react_to_message':
+                // Send tapback reaction via iMessage
+                try {
+                  if (this.lastUserMessageGuid) {
+                    logInfo('Sending reaction to user message', {
+                      chatGuid: this.chatGuid,
+                      targetMessageGuid: this.lastUserMessageGuid,
+                      targetMessageText: this.lastUserMessageText?.substring(0, 50) || '[unknown]',
+                      reaction: data.reaction
+                    });
+                    await this.iMessageAdapter.sendReaction(
+                      this.chatGuid,
+                      this.lastUserMessageGuid,
+                      data.reaction
+                    );
+                    toolResults.push({
+                      type: 'tool_result',
+                      tool_use_id: toolUse.id,
+                      content: `Reaction "${data.reaction}" sent to message`
+                    });
+                  } else {
+                    logWarn('Cannot send reaction - no message GUID available');
+                    toolResults.push({
+                      type: 'tool_result',
+                      tool_use_id: toolUse.id,
+                      content: `Could not send reaction - no message GUID available`
+                    });
+                  }
+                } catch (error) {
+                  logError('Failed to send reaction', error);
+                  toolResults.push({
+                    type: 'tool_result',
+                    tool_use_id: toolUse.id,
+                    content: `Failed to send reaction: ${error instanceof Error ? error.message : 'Unknown error'}`
+                  });
+                }
                 break;
 
               default:
@@ -295,14 +401,18 @@ export function createInteractionAgentRuntime(
   userId: string,
   chatGuid: string,
   context: ToolExecutionContext,
-  conversationHistory: Array<{ role: string; content: string }> = []
+  conversationHistory: Array<{ role: string; content: string }> = [],
+  lastUserMessageGuid: string = '',
+  lastUserMessageText: string = ''  // Store text for debugging reaction targets
 ): InteractionAgentRuntime {
   const runtime = new InteractionAgentRuntime(
     conversationId,
     userId,
     chatGuid,
     context,
-    conversationHistory
+    conversationHistory,
+    lastUserMessageGuid,
+    lastUserMessageText
   );
   setInteractionAgentRuntime(runtime);
   return runtime;

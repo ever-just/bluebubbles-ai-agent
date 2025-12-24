@@ -848,12 +848,19 @@ export class MessageRouter {
           });
         } else {
           // Process via interaction agent (handles its own message sending)
+          // Only pass message GUID if it's from the user (is_from_me=false)
+          // This prevents the agent from reacting to its own messages
+          const safeMessageGuid = bbMessage.is_from_me ? '' : (bbMessage.guid || '');
+          const safeMessageText = bbMessage.is_from_me ? '' : (bbMessage.text || '');
+          
           const interactionRuntime = createInteractionAgentRuntime(
             conversation.id,
             user.id,
             chatGuid,
             toolContext,
-            conversationHistory
+            conversationHistory,
+            safeMessageGuid,  // Pass message GUID for reaction support (empty if from agent)
+            safeMessageText   // Pass message text for debugging reaction targets
           );
 
           const result = await interactionRuntime.processUserMessage(processedMessage.text || '');

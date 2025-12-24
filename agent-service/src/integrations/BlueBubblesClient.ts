@@ -16,6 +16,14 @@ export class BlueBubblesClient extends EventEmitter {
   private chatGuidCache = new Map<string, { guid: string; cachedAt: number }>();
   private readonly cacheTtlMs = 5 * 60 * 1000;
   private activeTypingIndicators = new Set<string>();
+  
+  // Cooldown to prevent typing indicator from restarting too quickly after stopping
+  private typingCooldowns = new Map<string, number>();
+  private readonly typingCooldownMs = 5000; // 5 second cooldown after stopping
+  
+  // Track GUIDs of messages we've sent to prevent self-reactions
+  private sentMessageGuids = new Set<string>();
+  private readonly sentMessageGuidTtlMs = 5 * 60 * 1000; // 5 minutes
 
   constructor() {
     super();
@@ -180,6 +188,13 @@ export class BlueBubblesClient extends EventEmitter {
     if (!chatGuid || this.activeTypingIndicators.has(chatGuid)) {
       return;
     }
+    
+    // Check cooldown - don't restart typing if we recently stopped
+    const cooldownUntil = this.typingCooldowns.get(chatGuid);
+    if (cooldownUntil && Date.now() < cooldownUntil) {
+      logDebug('Skipping typing indicator start - in cooldown', { chatGuid });
+      return;
+    }
 
     try {
       const typingUrl = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/typing?password=${encodeURIComponent(this.password)}`;
@@ -203,6 +218,10 @@ export class BlueBubblesClient extends EventEmitter {
       const typingUrl = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/typing?password=${encodeURIComponent(this.password)}`;
       await axios.delete(typingUrl);
       this.activeTypingIndicators.delete(chatGuid);
+      
+      // Set cooldown to prevent immediate restart
+      this.typingCooldowns.set(chatGuid, Date.now() + this.typingCooldownMs);
+      
       logDebug('Stopped typing indicator via REST', { chatGuid });
     } catch (error) {
       logWarn('Failed to stop typing indicator', {
@@ -226,6 +245,69 @@ export class BlueBubblesClient extends EventEmitter {
         chatGuid,
         error: error instanceof Error ? error.message : String(error)
       });
+      throw error;
+    }
+  }
+
+  /**
+   * Track a message GUID that we've sent (to prevent self-reactions).
+   */
+  trackSentMessageGuid(guid: string): void {
+    if (guid) {
+      this.sentMessageGuids.add(guid);
+      logDebug('Tracked sent message GUID', { guid });
+      
+      // Clean up old GUIDs after TTL
+      setTimeout(() => {
+        this.sentMessageGuids.delete(guid);
+      }, this.sentMessageGuidTtlMs);
+    }
+  }
+
+  /**
+   * Check if a message GUID is one we've sent.
+   */
+  isSentByUs(guid: string): boolean {
+    return this.sentMessageGuids.has(guid);
+  }
+
+  /**
+   * Send a tapback reaction to a message.
+   * Requires BlueBubbles Private API to be enabled.
+   * @param chatGuid - The chat GUID (e.g., "iMessage;-;+1234567890")
+   * @param messageGuid - The message GUID to react to
+   * @param reaction - The reaction type: love, like, dislike, laugh, emphasize, question
+   */
+  async sendReaction(chatGuid: string, messageGuid: string, reaction: string): Promise<void> {
+    if (!chatGuid || !messageGuid || !reaction) {
+      logWarn('sendReaction called with missing parameters', { chatGuid, messageGuid, reaction });
+      return;
+    }
+
+    // SAFETY: Prevent reacting to our own messages
+    if (this.sentMessageGuids.has(messageGuid)) {
+      logWarn('Preventing self-reaction - message GUID is one we sent', { messageGuid, reaction });
+      return;
+    }
+
+    const validReactions = ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question', '-love', '-like', '-dislike', '-laugh', '-emphasize', '-question'];
+    if (!validReactions.includes(reaction)) {
+      logWarn('Invalid reaction type', { reaction, validReactions });
+      throw new Error(`Invalid reaction type: ${reaction}. Must be one of: ${validReactions.join(', ')}`);
+    }
+
+    try {
+      const url = `${this.apiUrl}/api/v1/message/react?password=${encodeURIComponent(this.password)}`;
+      const payload = {
+        chatGuid,
+        selectedMessageGuid: messageGuid,
+        reaction
+      };
+
+      await axios.post(url, payload);
+      logInfo('Sent reaction via REST', { chatGuid, messageGuid, reaction });
+    } catch (error) {
+      logError('Failed to send reaction via REST', error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
   }
@@ -428,6 +510,11 @@ export class BlueBubblesClient extends EventEmitter {
             logWarn('BlueBubbles socket send reported error', { chatGuid, response });
             finalize(typeof response.error === 'string' ? response.error : 'Socket send failed');
           } else {
+            // Track the sent message GUID to prevent self-reactions
+            const sentGuid = response?.data?.guid || response?.guid;
+            if (sentGuid) {
+              this.trackSentMessageGuid(sentGuid);
+            }
             finalize();
           }
         }
@@ -466,9 +553,16 @@ export class BlueBubblesClient extends EventEmitter {
       });
 
       if (response.data && response.data.status === 200) {
+        // Track the sent message GUID to prevent self-reactions
+        const sentGuid = response.data?.data?.guid || response.data?.data?.message?.guid;
+        if (sentGuid) {
+          this.trackSentMessageGuid(sentGuid);
+        }
+        
         logInfo('Message sent successfully via REST API', {
           chatGuid,
           response: response.data.message,
+          sentGuid,
           method
         });
         return true;

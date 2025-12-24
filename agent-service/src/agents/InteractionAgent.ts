@@ -63,6 +63,21 @@ export const INTERACTION_AGENT_TOOLS: ToolDefinition[] = [
       },
       required: ['reason']
     }
+  },
+  {
+    name: 'react_to_message',
+    description: 'Send a tapback reaction (❤️👍👎😂‼️❓) to the user\'s last message. Use liberally for acknowledgments. Prefer this over sending emoji as text.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        reaction: {
+          type: 'string',
+          enum: ['love', 'like', 'dislike', 'laugh', 'emphasize', 'question'],
+          description: 'The reaction type: love=❤️, like=👍, dislike=👎, laugh=😂, emphasize=‼️, question=❓'
+        }
+      },
+      required: ['reaction']
+    }
   }
 ];
 
@@ -84,7 +99,11 @@ export interface WaitResult {
   reason: string;
 }
 
-export type InteractionToolResult = SendToAgentResult | SendToUserResult | WaitResult;
+export interface ReactToMessageResult {
+  reaction: string;
+}
+
+export type InteractionToolResult = SendToAgentResult | SendToUserResult | WaitResult | ReactToMessageResult;
 
 /**
  * InteractionAgent handles user-facing communication and delegates tasks to execution agents.
@@ -122,6 +141,9 @@ export class InteractionAgent {
       
       case 'wait':
         return this.handleWait(input);
+      
+      case 'react_to_message':
+        return this.handleReactToMessage(input);
       
       default:
         return {
@@ -183,6 +205,20 @@ export class InteractionAgent {
         type: 'wait',
         reason
       } as WaitResult & { type: string }
+    };
+  }
+
+  private handleReactToMessage(input: { reaction: string }): ToolResult {
+    const { reaction } = input;
+
+    logInfo('InteractionAgent sending reaction', { reaction });
+
+    return {
+      success: true,
+      data: {
+        type: 'react_to_message',
+        reaction
+      } as ReactToMessageResult & { type: string }
     };
   }
 }

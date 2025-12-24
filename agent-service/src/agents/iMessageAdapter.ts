@@ -21,8 +21,9 @@ export class iMessageAdapter {
    * Send a message to the user, handling multiple bubbles and typing indicators.
    * @param message - The message to send (may contain || delimiters for multiple bubbles)
    * @param chatGuid - The BlueBubbles chat GUID
+   * @param skipTyping - If true, skip typing indicator management (used when caller manages typing)
    */
-  async sendToUser(message: string, chatGuid: string): Promise<void> {
+  async sendToUser(message: string, chatGuid: string, skipTyping = false): Promise<void> {
     // Split message into bubbles
     const bubbles = this.parseBubbles(message);
     
@@ -38,8 +39,10 @@ export class iMessageAdapter {
     });
 
     try {
-      // Start typing indicator
-      await this.startTyping(chatGuid);
+      // Start typing indicator (skip if caller manages typing, e.g., dual-agent mode)
+      if (!skipTyping) {
+        await this.startTyping(chatGuid);
+      }
 
       // Send each bubble with delay
       for (let i = 0; i < bubbles.length; i++) {
@@ -59,16 +62,20 @@ export class iMessageAdapter {
         }
       }
 
-      // Stop typing indicator
-      await this.stopTyping(chatGuid);
+      // Stop typing indicator (skip if caller manages typing)
+      if (!skipTyping) {
+        await this.stopTyping(chatGuid);
+      }
 
     } catch (error) {
       logError('iMessageAdapter failed to send message', error);
-      // Try to stop typing indicator even on error
-      try {
-        await this.stopTyping(chatGuid);
-      } catch {
-        // Ignore typing indicator cleanup errors
+      // Try to stop typing indicator even on error (skip if caller manages typing)
+      if (!skipTyping) {
+        try {
+          await this.stopTyping(chatGuid);
+        } catch {
+          // Ignore typing indicator cleanup errors
+        }
       }
       throw error;
     }
@@ -132,6 +139,24 @@ export class iMessageAdapter {
     });
 
     return formattedBubbles.join(' || ');
+  }
+
+  /**
+   * Send a tapback reaction to a message.
+   * @param chatGuid - The chat GUID
+   * @param messageGuid - The message GUID to react to
+   * @param reaction - The reaction type: love, like, dislike, laugh, emphasize, question
+   */
+  async sendReaction(chatGuid: string, messageGuid: string, reaction: string): Promise<void> {
+    logInfo('iMessageAdapter sending reaction', { chatGuid, messageGuid, reaction });
+
+    try {
+      await this.blueBubblesClient.sendReaction(chatGuid, messageGuid, reaction);
+      logDebug('iMessageAdapter reaction sent successfully', { reaction });
+    } catch (error) {
+      logError('iMessageAdapter failed to send reaction', error);
+      throw error;
+    }
   }
 }
 

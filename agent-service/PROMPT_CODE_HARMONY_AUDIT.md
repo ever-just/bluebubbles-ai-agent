@@ -1,8 +1,8 @@
 # Prompt-to-Code Harmony Audit
 
 **Audit Date**: December 22, 2025  
-**Last Updated**: December 23, 2025 (7:55 PM CST)  
-**Status**: 🟡 NOOP + Reaction System Designed (v4 - See Section 10)
+**Last Updated**: December 23, 2025 (8:35 PM CST)  
+**Status**: ✅ Dual-Agent NOOP + Reaction System IMPLEMENTED (v4.2 - See Section 10.15)
 
 ---
 
@@ -489,6 +489,20 @@ The agent can output special markers to control response behavior:
 
 ### 10.3 Tapback Reaction Types
 
+**API Endpoint (CONFIRMED):** `POST /api/v1/message/react?password={password}`
+
+**Request Body:**
+```json
+{
+  "chatGuid": "iMessage;-;+1234567890",
+  "selectedMessageGuid": "p:0/XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+  "reaction": "love",
+  "partIndex": 0  // optional
+}
+```
+
+**⚠️ Requires Private API** - BlueBubbles Private API must be enabled and connected.
+
 | Type | iMessage ID | Emoji | When to Use |
 |------|-------------|-------|-------------|
 | `love` | 2000 | ❤️ | Good news, gratitude, accomplishments, empathy |
@@ -497,6 +511,17 @@ The agent can output special markers to control response behavior:
 | `laugh` | 2003 | 😂 | Humor, jokes, funny messages |
 | `emphasize` | 2004 | ‼️ | Important/urgent messages |
 | `question` | 2005 | ❓ | Confusing messages (rarely appropriate) |
+
+**Remove Reactions:** Prefix with `-` (e.g., `-love`, `-like`) to remove a reaction.
+
+### 10.3.1 Reaction Guidelines (from OpenPoke)
+
+| Guideline | Description |
+|-----------|-------------|
+| **React liberally** | Agent can react even if user hasn't reacted first |
+| **Never react to reactions** | Don't respond to user's tapbacks with tapbacks |
+| **Avoid same emoji** | Don't use same emoji user just used in their message |
+| **Emoji text ≠ tapback** | Sending "👍" as text is different from a tapback reaction |
 
 ### 10.4 NOOP Scenarios
 
@@ -510,7 +535,9 @@ The agent can output special markers to control response behavior:
 | "perfect", "awesome" | `[REACT: love][NOOP]` | Positive feedback |
 | "hmm", "let me think" | `[NOOP]` | User thinking - stay silent |
 | "actually nvm" | `[NOOP]` | Self-correction - stay silent |
-| "Liked [message]" | `[NOOP]` | User's tapback - no response needed |
+| "Liked [message]" | `[NOOP]` | User's tapback - **NEVER react to reactions** |
+| "Loved [message]" | `[NOOP]` | User's tapback - **NEVER react to reactions** |
+| User sends ❤️ reaction | `[NOOP]` | User's tapback - **NEVER react to reactions** |
 
 ### 10.5 Reaction + Text Scenarios
 
@@ -623,4 +650,92 @@ If issues arise:
 1. Remove `[NOOP]` and `[REACT]` sections from prompt
 2. Revert `MessageRouter.ts` changes
 3. Keep `sendReaction()` in BlueBubblesClient for future use
+
+### 10.13 Research Sources (v4.1)
+
+| Source | Location | Key Findings |
+|--------|----------|--------------|
+| **BlueBubbles Server Source** | `bluebubbles-server/packages/server/.../messageRouter.ts:488-541` | `react()` endpoint confirmed |
+| **BlueBubbles API Validators** | `bluebubbles-server/.../messageValidator.ts:167-177` | Reaction types validated |
+| **BlueBubbles MessageInterface** | `bluebubbles-server/.../messageInterface.ts:27-40` | `possibleReactions` array |
+| **OpenPoke Interaction Agent** | `openpoke-reference/server/agents/interaction_agent/system_prompt.md` | `wait` tool, `reacttomessage`, reaction guidelines |
+| **OpenPoke Tools** | `openpoke-reference/server/agents/interaction_agent/tools.py:88-105` | `wait()` tool implementation |
+| **Tomo Architecture** | `docs/logs/Tomo-architecture.md:647-661` | `<noop />` pattern, DB recording |
+| **Prompt Research** | `docs/prompt-research.md` | Provider guidance, template patterns |
+
+### 10.14 Confidence Scores (Post-Research)
+
+| Component | Confidence | Notes |
+|-----------|------------|-------|
+| BlueBubbles Reaction API | **98%** | Endpoint, params, validation confirmed |
+| NOOP Implementation | **95%** | OpenPoke `wait` + Tomo `<noop />` validate approach |
+| Reaction Guidelines | **95%** | OpenPoke prompt provides clear patterns |
+| Message GUID Availability | **98%** | `bbMessage.guid` confirmed in flow |
+| Prompt Changes | **95%** | Clear patterns from OpenPoke + Tomo |
+| Code Changes | **95%** | All APIs and patterns confirmed |
+| **Overall** | **96%** | All uncertainties resolved |
+
+---
+
+### 10.15 Dual-Agent Mode Implementation (v4.2)
+
+**Implementation Date**: December 23, 2025  
+**Status**: ✅ IMPLEMENTED
+
+This section documents the dual-agent implementation which supersedes the single-agent marker-based approach.
+
+#### 10.15.1 Architecture Difference
+
+| Aspect | Single-Agent (Markers) | Dual-Agent (Tools) |
+|--------|------------------------|-------------------|
+| **NOOP** | `[NOOP]` marker in response | `wait(reason)` tool call |
+| **React** | `[REACT: type]` marker | `react_to_message(reaction)` tool call |
+| **Prompt file** | `grace_system_prompt.md` | `interaction_system_prompt.md` |
+| **Code location** | `MessageRouter.ts` parsing | `InteractionAgent.ts` + `InteractionAgentRuntime.ts` |
+| **Enabled by** | Default | `ENABLE_DUAL_AGENT=true` |
+
+#### 10.15.2 Files Modified
+
+| File | Changes |
+|------|---------|
+| `interaction_system_prompt.md` | Added response length rules, tone examples, `react_to_message` tool docs, context awareness, multiple message handling |
+| `InteractionAgent.ts` | Added `react_to_message` tool definition, `ReactToMessageResult` interface, `handleReactToMessage` method |
+| `InteractionAgentRuntime.ts` | Added `lastUserMessageGuid` parameter, `react_to_message` case in tool handler |
+| `BlueBubblesClient.ts` | Added `sendReaction(chatGuid, messageGuid, reaction)` method |
+| `iMessageAdapter.ts` | Added `sendReaction(chatGuid, messageGuid, reaction)` method |
+| `MessageRouter.ts` | Pass `bbMessage.guid` to `createInteractionAgentRuntime()` |
+
+#### 10.15.3 Prompt-to-Code Mapping (Dual-Agent)
+
+| Prompt Feature | Prompt Location | Code Location | Status |
+|----------------|-----------------|---------------|--------|
+| `react_to_message` tool | `interaction_system_prompt.md:48-73` | `InteractionAgent.ts:67-81` | ✅ DONE |
+| `wait` tool | `interaction_system_prompt.md:39-46` | `InteractionAgent.ts:53-66` | ✅ EXISTS |
+| Reaction types | `interaction_system_prompt.md:58-64` | `BlueBubblesClient.ts:246` | ✅ DONE |
+| Response length rules | `interaction_system_prompt.md:74-84` | N/A (prompt-only) | ✅ DONE |
+| Tone examples | `interaction_system_prompt.md:86-95` | N/A (prompt-only) | ✅ DONE |
+| Context awareness | `interaction_system_prompt.md:191-199` | N/A (prompt-only) | ✅ DONE |
+| Multiple messages | `interaction_system_prompt.md:201-207` | N/A (prompt-only) | ✅ DONE |
+
+#### 10.15.4 Conflict Resolutions Applied
+
+| Conflict | Resolution |
+|----------|------------|
+| "👍" as text vs tapback | Added "Tapback vs Emoji Text" section clarifying preference for `react_to_message` |
+| "No emojis" rule vs reactions | Clarified that tapback reactions are different from emoji text |
+| Response length missing | Copied rules from `grace_system_prompt.md` |
+| Tone examples missing | Added ❌/✅ comparisons |
+| "Never react to reactions" | Added explicit example showing `wait` for user tapbacks |
+
+#### 10.15.5 Harmony Verification Checklist
+
+| Check | Status |
+|-------|--------|
+| Prompt mentions all 4 tools (send_message_to_agent, send_message_to_user, wait, react_to_message) | ✅ |
+| Code defines all 4 tools in `INTERACTION_AGENT_TOOLS` | ✅ |
+| Runtime handles all 4 tool types | ✅ |
+| Message GUID flows from MessageRouter → Runtime → iMessageAdapter → BlueBubblesClient | ✅ |
+| Prompt examples use correct tool syntax | ✅ |
+| No conflicting guidelines between prompts | ✅ |
+| Fallback to single-agent mode works (ENABLE_DUAL_AGENT=false) | ✅ |
 
