@@ -11,6 +11,7 @@ import { OAuthToken } from './entities/OAuthToken';
 import { Trigger } from './entities/Trigger';
 import { ExecutionAgentLog } from './entities/ExecutionAgentLog';
 import { WorkingMemoryState } from './entities/WorkingMemoryState';
+import { AgentMailInbox } from './entities/AgentMailInbox';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -27,7 +28,8 @@ export const AppDataSource = new DataSource({
     OAuthToken,
     Trigger,
     ExecutionAgentLog,
-    WorkingMemoryState
+    WorkingMemoryState,
+    AgentMailInbox
   ],
   migrations: ['src/database/migrations/*.ts'],
   subscribers: ['src/database/subscribers/*.ts'],

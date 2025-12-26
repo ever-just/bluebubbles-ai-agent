@@ -1,8 +1,8 @@
 # Prompt-to-Code Harmony Audit
 
 **Audit Date**: December 22, 2025  
-**Last Updated**: December 23, 2025 (8:35 PM CST)  
-**Status**: ✅ Dual-Agent NOOP + Reaction System IMPLEMENTED (v4.2 - See Section 10.15)
+**Last Updated**: December 26, 2025 (10:15 AM CST)  
+**Status**: 🔴 CRITICAL ISSUES IDENTIFIED - See Section 11 (v5)
 
 ---
 
@@ -18,6 +18,7 @@
 8. [Summary of All Changes](#8-summary-of-all-changes)
 9. [Issues Discovered (December 23, 2025) - v3](#9-issues-discovered-december-23-2025---v3)
 10. [NOOP + Tapback Reaction System (v4)](#10-noop--tapback-reaction-system-v4)
+11. [**Production Issues (December 26, 2025) - v5**](#11-production-issues-discovered-december-26-2025---v5) 🔴 NEW
 
 ---
 
@@ -736,6 +737,518 @@ This section documents the dual-agent implementation which supersedes the single
 | Runtime handles all 4 tool types | ✅ |
 | Message GUID flows from MessageRouter → Runtime → iMessageAdapter → BlueBubblesClient | ✅ |
 | Prompt examples use correct tool syntax | ✅ |
-| No conflicting guidelines between prompts | ✅ |
+| No conflicting guidelines between prompts | ⚠️ SEE SECTION 11 |
 | Fallback to single-agent mode works (ENABLE_DUAL_AGENT=false) | ✅ |
+
+---
+
+## 11. Production Issues Discovered (December 26, 2025) - v5
+
+**Audit Date**: December 26, 2025  
+**Status**: 🔴 CRITICAL ISSUES IDENTIFIED - FIXES PENDING
+
+### 11.1 Issue Summary
+
+| Issue | Severity | Confidence | Root Cause |
+|-------|----------|------------|------------|
+| Agent not responding to direct questions | 🔴 HIGH | 85% | `wait` tool misuse - prompt lacks explicit guidance |
+| Typing indicator stuck after no response | 🔴 HIGH | 95% | Code: early returns bypass typing stop |
+| Memory system not storing data | 🟡 MEDIUM | 90% | Code: only saves during summarization |
+| Stale reminders in database | 🟢 LOW | 100% | Data: 15 pending reminders from October |
+
+### 11.2 Evidence: Agent Not Responding
+
+**Database Evidence (December 26, 2025):**
+
+```
+14:25:59 | user | "What's your email"              | NO RESPONSE (44 sec gap)
+14:27:03 | user | "Do you have an email?"          | NO RESPONSE (49 sec gap)
+14:28:16 | user | "Do you know the email address..." | NO RESPONSE (13 sec gap)
+14:28:29 | user | "Yes or no"                      | User follow-up
+```
+
+**BlueBubbles Log Evidence:**
+```
+08:28:16.621 - New Message from user: "Do you know the..."
+08:28:16.622 - Webhook dispatched to agent ✅
+08:28:16.654 - Typing indicator started ✅
+08:28:16.689 - Read receipt sent ✅
+[NO "Sending message" or "Adding await" until 08:30:41]
+08:28:29.663 - New Message from user: "Yes or no"
+```
+
+**Conclusion:** Agent received the message, started typing, but never sent a response. Most likely used `wait` tool incorrectly.
+
+### 11.3 Root Cause Analysis
+
+#### 11.3.1 `wait` Tool Prompt Gap
+
+**Current prompt guidance (`interaction_system_prompt.md:39-46`):**
+```markdown
+### wait
+Use this when you should NOT send a response.
+
+**When to use:**
+- The message you would send is already in conversation history
+- You're processing an agent result that doesn't need user notification
+- Avoiding duplicate acknowledgments
+- After `react_to_message` when no text response is needed
+```
+
+**Problem:** No explicit rule saying "ALWAYS respond to direct questions." The agent may interpret questions like "What's your email?" as not requiring a response.
+
+**Missing guidance:**
+- ❌ "Never use `wait` for direct questions"
+- ❌ "Questions always require a response"
+- ❌ "If unsure, respond rather than wait"
+
+#### 11.3.2 Typing Indicator Code Bug
+
+**Location:** `MessageRouter.ts:760-773, 836-840`
+
+**Problem:** Early return paths after typing indicator starts but before it stops.
+
+```typescript
+// Line 760-765: Typing starts
+if (config.messaging.typingIndicators && !typingStarted) {
+  await this.blueBubblesClient.startTypingIndicator(typingGuid);
+  typingStarted = true;
+}
+
+// Line 773: Early return WITHOUT stopping typing ❌
+if (this.isRecentAssistantEcho(...)) {
+  return;  // Typing indicator left on!
+}
+
+// Line 840: Early return WITHOUT stopping typing ❌
+if (this.isResponseRateLimited(conversation.id)) {
+  return;  // Typing indicator left on!
+}
+```
+
+**The `finally` block (line 992) is inside a different try scope, so these early returns bypass it.**
+
+#### 11.3.3 Memory System Gap
+
+**Location:** `ContextService.ts`, `MessageRouter.ts:1284`
+
+**Problem:** `saveMemory()` is only called in `persistConversationSummary()`, which only triggers when token count exceeds `summaryTriggerTokens` (default 5500).
+
+**Result:** `context_memory` table has 0 rows despite 11,392 messages in database.
+
+**Missing:** Proactive memory extraction from conversations (facts, preferences, etc.)
+
+### 11.4 Prompt-to-Code Mapping Updates
+
+| Prompt Feature | Prompt Location | Code Location | Status |
+|----------------|-----------------|---------------|--------|
+| `wait` tool guidance | `interaction_system_prompt.md:39-46` | N/A (prompt-only) | ⚠️ INCOMPLETE |
+| Typing indicator stop | N/A | `MessageRouter.ts:885-889, 902-906, 992-1002` | 🔴 BUG |
+| Memory extraction | N/A | `ContextService.ts:20-95` | ⚠️ NOT TRIGGERED |
+| Direct question handling | NOT IN PROMPT | N/A | ❌ MISSING |
+
+### 11.5 Code-to-Prompt Mapping Updates
+
+| Code Feature | Code Location | Prompt Reference | Status |
+|--------------|---------------|------------------|--------|
+| `isRecentAssistantEcho()` early return | `MessageRouter.ts:768-774` | NOT in prompt | ⚠️ UNDOCUMENTED |
+| `isResponseRateLimited()` early return | `MessageRouter.ts:836-841` | NOT in prompt | ⚠️ UNDOCUMENTED |
+| Typing indicator lifecycle | `MessageRouter.ts:760-765, 885-889` | NOT in prompt | ⚠️ UNDOCUMENTED |
+| `saveMemory()` trigger conditions | `MessageRouter.ts:1284` | NOT in prompt | ⚠️ UNDOCUMENTED |
+
+### 11.6 Implementation Plan
+
+#### Phase 1: Critical Fixes (Prompt)
+
+| # | Change | File | Priority |
+|---|--------|------|----------|
+| 1 | Add "NEVER use `wait` for direct questions" rule | `interaction_system_prompt.md` | 🔴 HIGH |
+| 2 | Add "Questions ALWAYS require a response" rule | `interaction_system_prompt.md` | 🔴 HIGH |
+| 3 | Add "When unsure, respond rather than wait" guidance | `interaction_system_prompt.md` | 🔴 HIGH |
+| 4 | Add examples of questions that require responses | `interaction_system_prompt.md` | 🟡 MEDIUM |
+
+#### Phase 2: Critical Fixes (Code)
+
+| # | Change | File | Priority |
+|---|--------|------|----------|
+| 1 | Stop typing indicator on ALL early return paths | `MessageRouter.ts` | 🔴 HIGH |
+| 2 | Wrap message handling in try/finally for typing cleanup | `MessageRouter.ts` | 🔴 HIGH |
+| 3 | Add logging when `wait` tool is used | `InteractionAgentRuntime.ts` | 🟡 MEDIUM |
+
+#### Phase 3: Memory System Enhancement
+
+| # | Change | File | Priority |
+|---|--------|------|----------|
+| 1 | Add proactive memory extraction after conversations | `MessageRouter.ts` | 🟡 MEDIUM |
+| 2 | Extract facts/preferences from user messages | `ContextService.ts` | 🟡 MEDIUM |
+| 3 | Lower `summaryTriggerTokens` or add alternative triggers | `config/index.ts` | 🟢 LOW |
+
+#### Phase 4: Data Cleanup
+
+| # | Change | Location | Priority |
+|---|--------|----------|----------|
+| 1 | Delete/cancel 15 stale pending reminders from October | Database | 🟢 LOW |
+| 2 | Add reminder auto-expiration logic | `ReminderService.ts` | 🟢 LOW |
+
+### 11.7 Testing Plan
+
+| Test Case | Expected Behavior | Status |
+|-----------|-------------------|--------|
+| User: "What's your email?" | Agent responds with email address | ⏳ PENDING |
+| User: "Do you know X?" | Agent responds yes/no + info | ⏳ PENDING |
+| User: "ok" | Agent uses `react_to_message` + `wait` | ⏳ PENDING |
+| Early return triggered | Typing indicator stops | ⏳ PENDING |
+| Rate limit triggered | Typing indicator stops | ⏳ PENDING |
+| Long conversation | Memory saved to `context_memory` | ⏳ PENDING |
+
+### 11.8 Rollback Plan
+
+If issues persist after fixes:
+1. Revert prompt changes to previous version
+2. Disable `wait` tool temporarily (force responses)
+3. Add server-side fallback: if no response in 10s, send "Let me think about that..."
+
+---
+
+## 12. Session 2 Fixes Applied & New Issues (December 26, 2025 11:00 AM) - v6
+
+**Audit Date**: December 26, 2025 11:24 AM CST  
+**Status**: 🟡 PARTIAL FIXES APPLIED - NEW ISSUES DISCOVERED
+
+### 12.1 Fixes Applied This Session
+
+| Issue | Fix Applied | File | Status |
+|-------|-------------|------|--------|
+| Agent not responding to questions | Added `wait` tool restrictions + decision guide | `interaction_system_prompt.md:39-70` | ✅ FIXED |
+| Typing indicator stuck | Added stop calls on 3 early return paths | `MessageRouter.ts:773-776, 844-847, 930-933` | ✅ FIXED |
+| Text-only responses not sent | Added fallback to send text blocks directly | `InteractionAgentRuntime.ts:186-204` | ✅ FIXED |
+| Wait tool not logged | Added `logInfo` when wait is used | `InteractionAgentRuntime.ts:252-256` | ✅ FIXED |
+| Typing indicator logging | Added start/stop logging | `MessageRouter.ts:765, 896, 1010` | ✅ ADDED |
+
+### 12.2 New Issues Discovered
+
+| Issue | Severity | Root Cause | Status |
+|-------|----------|------------|--------|
+| `||` separator visible in conversation history | 🟡 MEDIUM | Messages saved with `||` before being split | ❌ NOT FIXED |
+| Duplicate lines in combined messages | 🟡 MEDIUM | BlueBubbles sends same webhook twice | ❌ NOT FIXED |
+| Old corrupted data in conversation | 🟡 MEDIUM | Historical duplicates from before echo fix | ❌ NOT FIXED |
+| Agent confused by history | 🟡 MEDIUM | Sees `||` and duplicates in context | ❌ NOT FIXED |
+
+### 12.3 Root Cause Analysis - New Issues
+
+#### 12.3.1 `||` Separator in Saved Messages
+
+**Problem:** When the agent sends a message like `"Hello || How are you?"`, the `iMessageAdapter` correctly splits it into two bubbles for iMessage. However, the message is saved to the database WITH the `||` markers intact.
+
+**Evidence:**
+```sql
+-- Database shows:
+content: "You're right. || Let me fix that. || I should be using || to split longer thoughts."
+```
+
+**Impact:** When the agent sees this in conversation history, it sees the raw `||` format, which is confusing.
+
+**Location:** `MessageRouter.ts:891-896` - saves `result.messagesSent` which contains raw text with `||`
+
+#### 12.3.2 BlueBubbles Double-Webhook
+
+**Problem:** BlueBubbles sends the same message webhook TWICE with the same GUID.
+
+**Evidence from logs:**
+```
+11:19:29 - WEBHOOK RECEIVED: guid: "3BE320FA-1FAF-4DBD-96AE-D6376D9ED31E"
+11:19:29 - WEBHOOK RECEIVED: guid: "3BE320FA-1FAF-4DBD-96AE-D6376D9ED31E" (SAME GUID)
+```
+
+**Impact:** The debounce handler may combine these as separate messages, causing duplicate lines.
+
+**Current mitigation:** `isDuplicateMessage()` checks GUID, but this happens AFTER debounce buffer.
+
+#### 12.3.3 Old Corrupted Conversation Data
+
+**Problem:** The current conversation has 329 messages, with 207 from before today containing duplicates from before echo detection was fixed.
+
+**Evidence:**
+```sql
+-- Same message saved as both user and assistant:
+2025-12-26 17:07:49.456216 | assistant | checking now... | dual-agent
+2025-12-26 17:07:49.409583 | user      | checking now... | bluebubbles
+```
+
+**Impact:** Agent sees duplicates in conversation history and gets confused.
+
+### 12.4 Implementation Plan - Phase 5
+
+#### 12.4.1 Fix: Strip `||` Before Saving to Database
+
+**File:** `MessageRouter.ts`
+
+**Change:** Strip `||` from messages before saving to database, replacing with newlines.
+
+```typescript
+// Before saving:
+const cleanedMessage = msg.replace(/\s*\|\|\s*/g, '\n');
+await this.saveMessage(user.id, conversation.id, 'assistant', cleanedMessage, {...});
+```
+
+#### 12.4.2 Fix: Deduplicate in Debounce Buffer by GUID
+
+**File:** `MessageRouter.ts`
+
+**Change:** Check for duplicate GUIDs in debounce buffer before adding.
+
+```typescript
+// In addToDebounceBuffer:
+const existingGuids = buffer.messages.map(m => m.guid);
+if (existingGuids.includes(bbMessage.guid)) {
+  logDebug('Skipping duplicate GUID in debounce buffer');
+  return;
+}
+```
+
+#### 12.4.3 Fix: Clean Up Old Corrupted Data
+
+**Action:** SQL to delete duplicate user messages that match assistant messages.
+
+```sql
+DELETE FROM messages 
+WHERE id IN (
+  SELECT u.id FROM messages u
+  JOIN messages a ON TRIM(u.content) = TRIM(a.content)
+  WHERE u.role = 'user' AND a.role = 'assistant'
+  AND u.conversation_id = a.conversation_id
+  AND ABS(EXTRACT(EPOCH FROM (u.created_at - a.created_at))) < 5
+);
+```
+
+#### 12.4.4 Fix: Remove Debug Logging
+
+**Files:** `MessageRouter.ts`, `InteractionAgentRuntime.ts`
+
+**Change:** Remove or downgrade verbose logging added during debugging.
+
+### 12.5 Updated Prompt-to-Code Mapping
+
+| Prompt Feature | Prompt Location | Code Location | Status |
+|----------------|-----------------|---------------|--------|
+| `wait` tool restrictions | `interaction_system_prompt.md:49-55` | N/A (prompt-only) | ✅ ADDED |
+| RESPOND vs WAIT guide | `interaction_system_prompt.md:57-70` | N/A (prompt-only) | ✅ ADDED |
+| `||` bubble separator | `interaction_system_prompt.md:35-37` | `iMessageAdapter.ts:88-92` | ⚠️ NEEDS DB CLEANUP |
+| Typing indicator lifecycle | N/A | `MessageRouter.ts:765, 773-776, 844-847, 896, 930-933, 1010` | ✅ FIXED |
+
+### 12.6 Updated Code-to-Prompt Mapping
+
+| Code Feature | Code Location | Prompt Reference | Status |
+|--------------|---------------|------------------|--------|
+| Text-only response fallback | `InteractionAgentRuntime.ts:186-204` | NOT in prompt | ⚠️ UNDOCUMENTED |
+| Wait tool logging | `InteractionAgentRuntime.ts:252-256` | NOT in prompt | ✅ OK (internal) |
+| Debounce message combining | `MessageRouter.ts:560-577` | NOT in prompt | ⚠️ UNDOCUMENTED |
+| GUID duplicate detection | `MessageRouter.ts:703-706` | NOT in prompt | ⚠️ NEEDS ENHANCEMENT |
+
+### 12.7 Testing Checklist
+
+| Test Case | Expected | Actual | Status |
+|-----------|----------|--------|--------|
+| Agent responds to "What's your email?" | Response sent | Response sent | ✅ PASS |
+| Typing indicator stops after response | Stops | Stops | ✅ PASS |
+| `wait` tool logged when used | Log entry | Log entry | ✅ PASS |
+| Echo detection filters self-messages | Filtered | Filtered | ✅ PASS |
+| `||` not visible in saved messages | Clean text | Has `||` | ❌ FAIL |
+| No duplicate lines in combined messages | Single lines | Duplicate lines | ❌ FAIL |
+| Agent not confused by history | Clear context | Confused | ❌ FAIL |
+
+### 12.8 Priority Order for Remaining Fixes
+
+1. **🔴 HIGH:** Strip `||` from messages before saving - ✅ DONE
+2. **🔴 HIGH:** Deduplicate by GUID in debounce buffer - ✅ DONE
+3. **🟡 MEDIUM:** Clean up old corrupted conversation data - ✅ DONE
+4. **🟢 LOW:** Remove debug logging - ✅ DONE
+
+---
+
+## 13. Final Fixes Applied (December 26, 2025 11:52 AM) - v7
+
+**Audit Date**: December 26, 2025 11:52 AM CST  
+**Status**: ✅ ALL ISSUES RESOLVED
+
+### 13.1 Root Cause Identified
+
+The agent was responding to its own messages because:
+1. **Socket event handler** in `BlueBubblesClient.ts` was emitting messages without checking `is_from_me`
+2. **Echo detection** was recording the wrong message format (with `||` separators instead of individual bubbles)
+3. **Webhook handler** was filtering correctly, but socket events bypassed this check
+
+### 13.2 Final Fixes Applied
+
+| Fix | File | Description | Status |
+|-----|------|-------------|--------|
+| Strip `||` before saving | `MessageRouter.ts:893-894` | Replace `||` with newlines in saved messages | ✅ |
+| GUID dedup in debounce | `MessageRouter.ts:528-533` | Skip duplicate GUIDs in debounce buffer | ✅ |
+| Record each bubble | `MessageRouter.ts:899-903` | Split on `||` and record each bubble for echo detection | ✅ |
+| Socket `is_from_me` check | `BlueBubblesClient.ts:86-90` | Skip self-sent messages in socket event handler | ✅ |
+| Socket `is_from_me` check | `MessageRouter.ts:610-614` | Additional check in message listener | ✅ |
+
+### 13.3 Verification Results
+
+**Database after fixes (no duplicates):**
+```
+2025-12-26 17:51:52 | assistant | here you go: https://www.ticketmaster.com/mau-p-minneapolis-
+2025-12-26 17:51:40 | user      | Can you get the link to buy tickets
+2025-12-26 17:51:28 | assistant | mau p is playing at the armory tonight - doors at 9pm
+2025-12-26 17:51:10 | user      | Today
+2025-12-26 17:51:09 | assistant | which armory and when?...
+2025-12-26 17:50:53 | user      | Questioned "Who's performing at the armory?"
+2025-12-26 17:50:45 | assistant | hey! how's it going?
+2025-12-26 17:50:39 | user      | Hello
+```
+
+All messages correctly attributed - no agent messages saved as user messages.
+
+### 13.4 Updated Testing Checklist
+
+| Test Case | Expected | Actual | Status |
+|-----------|----------|--------|--------|
+| Agent responds to questions | Response sent | Response sent | ✅ PASS |
+| Typing indicator stops after response | Stops | Stops | ✅ PASS |
+| Echo detection filters self-messages | Filtered | Filtered | ✅ PASS |
+| `||` not visible in saved messages | Clean text | Clean text | ✅ PASS |
+| No duplicate lines in combined messages | Single lines | Single lines | ✅ PASS |
+| Agent not confused by history | Clear context | Clear context | ✅ PASS |
+| Socket events filtered for is_from_me | Filtered | Filtered | ✅ PASS |
+
+---
+
+## 14. Agent UX Issues Discovered (December 26, 2025 12:15 PM) - v8
+
+**Audit Date**: December 26, 2025 12:15 PM CST  
+**Status**: 🔍 PLANNING COMPLETE - IMPLEMENTATION PENDING
+
+### 14.1 New Issues Identified
+
+| # | Issue | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Typing indicator stays on after tapback-only response | 🔴 HIGH | 🔍 Needs Debug |
+| 2 | No action acknowledgments during tool execution | 🔴 HIGH | 📝 Planned |
+| 3 | "searching" message sent AFTER search completes | 🔴 HIGH | 📝 Planned |
+| 4 | Robotic "🔍 searching..." message | 🟡 MED | 📝 Planned |
+| 5 | Poor search result formatting | 🟢 LOW | 📝 Planned |
+
+### 14.2 Agent Architecture Clarification
+
+**Question**: Does the primary agent wait for subagents and then respond?
+
+**Answer**: YES
+
+```
+User Message → InteractionAgent (Primary)
+                    │
+                    ├─► Direct Response (simple messages)
+                    │
+                    └─► send_message_to_agent (delegation)
+                              │
+                              ▼
+                    ExecutionBatchManager
+                              │
+                              ▼
+                    ExecutionAgent (Subagent)
+                    - Runs tools (reminders, emails, etc.)
+                    - Does NOT send messages to user
+                              │
+                              ▼
+                    Results → InteractionAgent
+                              │
+                              ▼
+                    InteractionAgent → send_message_to_user
+                              │
+                              ▼
+                    User Sees Response
+```
+
+**Key Points**:
+- ExecutionAgent does NOT send messages directly to user
+- ExecutionAgent returns results to InteractionAgent
+- InteractionAgent decides how to communicate results
+- **GAP**: No acknowledgment sent during execution phase
+
+### 14.3 Root Cause: Delayed "searching" Message
+
+The `web_search` is a **server tool** executed by Anthropic:
+
+1. We call `anthropic.messages.create()` with `web_search` tool enabled
+2. Anthropic decides to use `web_search`
+3. **Anthropic executes the search (2-5 seconds)**
+4. Anthropic returns response with `server_tool_use` blocks
+5. ONLY THEN do we detect `hasWebSearch` and send "searching..."
+
+**The search has already completed by the time we detect it!**
+
+### 14.4 Proposed Solution: Action Acknowledgment System
+
+**Design Principles**:
+1. **Immediate feedback** - User knows something is happening within 1 second
+2. **Natural language** - Varied responses, not robotic
+3. **Context-aware** - Acknowledgment matches action type
+4. **Non-blocking** - Sent before action starts
+
+**Implementation Approach**:
+- **Pre-emptive** for web_search (detect search-like queries before Claude call)
+- **On tool detection** for client tools (when Claude decides to use a tool)
+
+**Action Types and Acknowledgments**:
+
+| Action | Example Acknowledgments |
+|--------|------------------------|
+| web_search | "let me look that up", "searching for that now" |
+| send_email | "sending that email now", "composing that email" |
+| create_reminder | "setting that reminder", "I'll remind you" |
+| spawn_agent | "working on that", "give me a moment" |
+
+### 14.5 Implementation Plan Reference
+
+See `IMPLEMENTATION_PLAN_v6.md` for detailed implementation tasks.
+
+**Phase 1**: Action Acknowledgment System (HIGH PRIORITY)
+- Task 1.1: Create `actionAcknowledgments.ts` utility
+- Task 1.2: Pre-emptive search acknowledgment
+- Task 1.3: Tool-based acknowledgment
+
+**Phase 2**: Typing Indicator Debug (MEDIUM PRIORITY)
+- Task 2.1: Add debug logging
+- Task 2.2: Verify BlueBubbles DELETE request
+
+**Phase 3**: Search Result Formatting (LOW PRIORITY)
+- Task 3.1: Create formatting utility
+- Task 3.2: Apply to search results
+
+### 14.6 Files to Modify
+
+| File | Action | Description |
+|------|--------|-------------|
+| `src/utils/actionAcknowledgments.ts` | CREATE | Acknowledgment strings and detection |
+| `src/utils/messageFormatting.ts` | CREATE | Search result formatting |
+| `src/agents/InteractionAgentRuntime.ts` | MODIFY | Integrate acknowledgment system |
+| `src/services/MessageRouter.ts` | MODIFY | Typing indicator debug logging |
+| `src/agents/prompts/interaction_system_prompt.md` | MODIFY | Document acknowledgment behavior |
+
+### 14.7 Prompt-Code Harmony Considerations
+
+**Current Prompt Guidance** (interaction_system_prompt.md):
+- Wait tool restrictions added ✅
+- RESPOND vs WAIT decision guide added ✅
+
+**New Prompt Updates Needed**:
+- Document that system handles action acknowledgments automatically
+- Agent should NOT send its own "let me check" messages
+- Focus on final result, not progress updates
+
+### 14.8 Testing Checklist (Pending)
+
+| Test Case | Expected | Status |
+|-----------|----------|--------|
+| Search query gets immediate acknowledgment | Ack before search | ⏳ PENDING |
+| Reminder request gets immediate acknowledgment | Ack before agent spawn | ⏳ PENDING |
+| Email request gets immediate acknowledgment | Ack before email | ⏳ PENDING |
+| Only ONE acknowledgment per request | No duplicates | ⏳ PENDING |
+| Tapback-only response stops typing indicator | Typing stops | ⏳ PENDING |
+| Acknowledgments are varied | Different messages | ⏳ PENDING |
 

@@ -124,6 +124,7 @@ Environment variables (see `.env.example` for defaults):
 | `ANTHROPIC_MAX_CONCURRENT_REQUESTS` | Queue concurrency |
 | `ANTHROPIC_SUMMARY_TRIGGER_TOKENS` | When to summarize conversation history |
 | `BLUEBUBBLES_URL` / `BLUEBUBBLES_PASSWORD` | Messaging transport |
+| `TYPING_INDICATORS_ENABLED` | Enable typing indicators (default `false` - disabled due to BlueBubbles timing issues) |
 | `DATABASE_URL`, `REDIS_URL` | Persistence and job queue |
 | `ENCRYPTION_KEY`, `SESSION_SECRET` | Secure storage and sessions |
 
@@ -181,4 +182,4 @@ MIT License – see `LICENSE` for details.
 
 **Repository:** https://github.com/ever-just/bluebubbles-ai-agent  
 **Project Name:** TEXTMYAGENT  
-**Last Updated:** November 2025
+**Last Updated:** December 2025

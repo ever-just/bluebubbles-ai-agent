@@ -5,6 +5,8 @@ import { iMessageAdapter, getIMessageAdapter } from './iMessageAdapter';
 import { ToolExecutionContext } from '../tools/Tool';
 import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
 import { config } from '../config';
+import { getActionAcknowledgment, detectActionType, looksLikeSearchQuery, ActionType } from '../utils/actionAcknowledgments';
+import { formatSearchResults } from '../utils/messageFormatting';
 
 const MAX_TOOL_ITERATIONS = 8;
 
@@ -122,6 +124,17 @@ export class InteractionAgentRuntime {
     const agentsSpawned: string[] = [];
     const waitReasons: string[] = [];
     let iterationCount = 0;
+    let hasAcknowledged = false;
+
+    // PRE-EMPTIVE ACKNOWLEDGMENT: For user messages that look like search queries,
+    // send acknowledgment BEFORE Claude API call (since web_search is a server tool)
+    if (messageType === 'user' && looksLikeSearchQuery(content) && !hasAcknowledged) {
+      const ack = getActionAcknowledgment('web_search');
+      await this.iMessageAdapter.sendToUser(ack, this.chatGuid, true);
+      messagesSent.push(ack);
+      hasAcknowledged = true;
+      logInfo('Pre-emptive search acknowledgment sent', { ack });
+    }
 
     // Build structured context
     const structuredContent = this.buildStructuredContent(messageType, content);
@@ -175,16 +188,39 @@ export class InteractionAgentRuntime {
           (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
         );
         
-        // If web_search server tool is being used, notify user immediately
+        // If web_search server tool was used and we haven't acknowledged yet, do so now
+        // (This is a fallback - pre-emptive detection should catch most cases)
         const hasWebSearch = serverToolBlocks.some((block: any) => block.name === 'web_search');
-        if (hasWebSearch) {
-          logInfo('Web search server tool detected - notifying user');
-          await this.iMessageAdapter.sendToUser('🔍 searching...', this.chatGuid, true);
-          messagesSent.push('🔍 searching...');
+        if (hasWebSearch && !hasAcknowledged) {
+          const ack = getActionAcknowledgment('web_search');
+          logInfo('Web search server tool detected - sending fallback acknowledgment', { ack });
+          await this.iMessageAdapter.sendToUser(ack, this.chatGuid, true);
+          messagesSent.push(ack);
+          hasAcknowledged = true;
         }
 
-        // If no client tool use, we're done (server tools are handled automatically)
+        // If no client tool use, check for text content to send
         if (toolUseBlocks.length === 0) {
+          // Extract any text blocks from the response
+          const textBlocks = response.content.filter(
+            (block): block is Anthropic.TextBlock => block.type === 'text'
+          );
+          
+          // If Claude returned text without using send_message_to_user tool, send it anyway
+          if (textBlocks.length > 0) {
+            const textContent = textBlocks.map(b => b.text).join('\n').trim();
+            if (textContent) {
+              logInfo('Claude returned text without tool - sending directly', {
+                textPreview: textContent.substring(0, 50)
+              });
+              // Strip citations and format for better iMessage display
+              let cleanMessage = stripCitations(textContent);
+              cleanMessage = formatSearchResults(cleanMessage);
+              await this.iMessageAdapter.sendToUser(cleanMessage, this.chatGuid, true);
+              messagesSent.push(cleanMessage);
+            }
+          }
+          
           logInfo('InteractionAgentRuntime completed (no more tools)', {
             iterationCount,
             messagesSent: messagesSent.length,
@@ -231,6 +267,14 @@ export class InteractionAgentRuntime {
                 break;
 
               case 'send_to_agent':
+                // Send acknowledgment BEFORE spawning agent (if not already sent)
+                if (!hasAcknowledged) {
+                  const ack = getActionAcknowledgment('spawn_agent');
+                  await this.iMessageAdapter.sendToUser(ack, this.chatGuid, true);
+                  messagesSent.push(ack);
+                  hasAcknowledged = true;
+                  logInfo('Agent spawn acknowledgment sent', { ack, agentName: data.agentName });
+                }
                 // Spawn execution agent (async - don't await here)
                 agentsSpawned.push(data.agentName);
                 this.batchManager.executeAgent(
@@ -249,6 +293,11 @@ export class InteractionAgentRuntime {
 
               case 'wait':
                 waitReasons.push(data.reason);
+                logInfo('Agent used wait tool', {
+                  reason: data.reason,
+                  chatGuid: this.chatGuid,
+                  lastUserMessage: this.lastUserMessageText?.substring(0, 50)
+                });
                 toolResults.push({
                   type: 'tool_result',
                   tool_use_id: toolUse.id,

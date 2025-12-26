@@ -2,6 +2,8 @@ import { logInfo, logWarn, logError } from '../utils/logger';
 import { ensureToolPermissions, ITool, ToolDefinition, ToolExecutionContext, ToolResult } from './Tool';
 import { createReminderTool, listRemindersTool, cancelReminderTool } from './ReminderTool';
 import { createTriggerTool, listTriggersTool, updateTriggerTool, deleteTriggerTool } from './TriggerTool';
+import { sendEmailTool, listEmailsTool, readEmailTool, replyEmailTool, getAgentEmailTool } from './EmailTool';
+import { config } from '../config';
 
 /**
  * Registry for managing AI tools.
@@ -31,6 +33,15 @@ export class ToolRegistry {
     this.tools.set(listTriggersTool.getDefinition().name, listTriggersTool);
     this.tools.set(updateTriggerTool.getDefinition().name, updateTriggerTool);
     this.tools.set(deleteTriggerTool.getDefinition().name, deleteTriggerTool);
+
+    // Email tools (only if AgentMail is enabled)
+    if (config.agentmail.enabled) {
+      this.tools.set(sendEmailTool.getDefinition().name, sendEmailTool);
+      this.tools.set(listEmailsTool.getDefinition().name, listEmailsTool);
+      this.tools.set(readEmailTool.getDefinition().name, readEmailTool);
+      this.tools.set(replyEmailTool.getDefinition().name, replyEmailTool);
+      this.tools.set(getAgentEmailTool.getDefinition().name, getAgentEmailTool);
+    }
   }
 
   registerTool(tool: ITool): void {

@@ -301,6 +301,64 @@ app.post('/webhook/bluebubbles', async (req, res) => {
   }
 });
 
+// AgentMail webhook endpoint for incoming emails
+app.post('/webhook/email', async (req, res) => {
+  try {
+    const { config: appConfig } = await import('./config');
+    
+    // Verify webhook secret if configured
+    const webhookSecret = appConfig.agentmail.webhookSecret;
+    if (webhookSecret) {
+      const providedSecret = req.headers['x-agentmail-secret'] || req.headers['authorization'];
+      if (providedSecret !== webhookSecret && providedSecret !== `Bearer ${webhookSecret}`) {
+        logWarn('AgentMail webhook: Invalid secret');
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    }
+
+    const { event, data } = req.body;
+    logInfo('Received AgentMail webhook', { event, inboxId: data?.inboxId });
+
+    if (event === 'message.received' && data) {
+      logInfo('Received email to Grace inbox', {
+        from: data.from,
+        subject: data.subject?.substring(0, 50),
+        inboxId: data.inboxId
+      });
+      
+      // Notify admin user via iMessage about incoming email
+      try {
+        const { getSecurityManager } = await import('./middleware/security');
+        const { BlueBubblesClient } = await import('./integrations/BlueBubblesClient');
+        
+        const securityManager = getSecurityManager();
+        const adminHandles = securityManager.getAdminHandles();
+        
+        if (adminHandles.length > 0) {
+          const bbClient = new BlueBubblesClient();
+          const notificationText = `📧 New email received!\nFrom: ${data.from}\nSubject: ${data.subject || '(no subject)'}`;
+          
+          // Notify first admin
+          const adminHandle = adminHandles[0];
+          const chatGuid = await bbClient.findChatGuidByHandle(adminHandle);
+          if (chatGuid) {
+            await bbClient.sendMessage(chatGuid, notificationText);
+            logInfo('Sent email notification to admin via iMessage', { adminHandle });
+          }
+        }
+      } catch (notifyError) {
+        logWarn('Failed to send email notification to admin', { error: notifyError });
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    logError('Error processing AgentMail webhook', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
@@ -355,14 +413,9 @@ async function startServer() {
     logInfo('Database connected successfully');
     
     // Initialize MessageRouter (which handles BlueBubbles)
+    // Note: getMessageRouter() already calls initialize() internally, so we don't call it again
     const messageRouter = await getMessageRouter();
     globalMessageRouter = messageRouter;
-    try {
-      await messageRouter.initialize();
-    } catch (error) {
-      logWarn('BlueBubbles connection failed - server will run without iMessage support', error);
-      // Continue without BlueBubbles - the server can still handle API requests
-    }
     
     // Initialize context service
     const contextService = getContextService();

@@ -34,8 +34,17 @@ If you see a "Previous Actions" section below, you have worked on tasks before u
 ## Available Tools
 
 The tools available to you depend on your assigned role. Common tools include:
+
+### Reminders
 - `create_reminder` - Set reminders for the user
 - `list_reminders` - View pending reminders
 - `cancel_reminder` - Remove a reminder
+
+### Email
+- `send_email` - Send emails (to, subject, body required)
+- `list_emails` - View recent emails
+- `read_email` - Read a specific email by message_id
+- `reply_email` - Reply to an email (message_id, body required)
+- `get_agent_email` - Get the agent's email address
 
 Use only the tools that are relevant to your current task.

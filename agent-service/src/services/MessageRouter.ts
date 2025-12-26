@@ -54,6 +54,12 @@ export class MessageRouter {
   // Global outbound cache - catches echoes before conversation is resolved
   private globalOutboundCache = new Map<string, number>(); // normalized text -> timestamp
   private readonly globalOutboundTtlMs = 5 * 60_000; // 5 minutes
+  
+  // Global processed GUID cache - prevents duplicate processing from socket + webhook
+  // This is checked BEFORE debounce buffer to catch duplicates across all sources
+  private processedGuidCache = new Map<string, number>(); // guid -> timestamp
+  private readonly processedGuidTtlMs = 60_000; // 1 minute TTL
+  
   private blueBubblesPollingDisabled = false;
   private dualAgentEnabled = false;
   private workingMemoryLogs = new Map<string, WorkingMemoryLog>();
@@ -484,12 +490,52 @@ export class MessageRouter {
   }
 
   /**
+   * Check if a GUID has already been processed (prevents socket + webhook duplicates)
+   */
+  private isGuidAlreadyProcessed(guid?: string): boolean {
+    if (!guid) {
+      logInfo('isGuidAlreadyProcessed: No GUID provided');
+      return false;
+    }
+    
+    const now = Date.now();
+    
+    // Clean up expired entries
+    for (const [storedGuid, timestamp] of this.processedGuidCache) {
+      if (now - timestamp > this.processedGuidTtlMs) {
+        this.processedGuidCache.delete(storedGuid);
+      }
+    }
+    
+    // Check if already processed
+    if (this.processedGuidCache.has(guid)) {
+      logInfo('isGuidAlreadyProcessed: GUID already in cache - DUPLICATE', { guid });
+      return true;
+    }
+    
+    // Mark as processed
+    this.processedGuidCache.set(guid, now);
+    logInfo('isGuidAlreadyProcessed: New GUID recorded', { guid, cacheSize: this.processedGuidCache.size });
+    return false;
+  }
+
+  /**
    * Debounce incoming messages - collect rapid messages before processing.
    * This prevents multiple Claude calls when user sends several messages quickly.
    */
   private debounceMessage(bbMessage: BlueBubblesMessage): void {
     // Skip debounce during startup protection
     if (this.startupProtectionEnabled) {
+      return;
+    }
+    
+    // GLOBAL GUID CHECK: Prevent duplicate processing from socket + webhook
+    // This must be checked FIRST, before any other logic
+    if (this.isGuidAlreadyProcessed(bbMessage.guid)) {
+      logInfo('Debounce: Skipping already-processed GUID (socket/webhook dedup)', {
+        guid: bbMessage.guid,
+        textPreview: bbMessage.text?.substring(0, 30)
+      });
       return;
     }
     
@@ -523,6 +569,13 @@ export class MessageRouter {
     if (!buffer) {
       buffer = { messages: [], timer: null };
       this.messageDebounceBuffers.set(chatId, buffer);
+    }
+
+    // Check for duplicate GUID in buffer (BlueBubbles sometimes sends same message twice)
+    const existingGuids = buffer.messages.map(m => m.guid);
+    if (bbMessage.guid && existingGuids.includes(bbMessage.guid)) {
+      logDebug('Skipping duplicate GUID in debounce buffer', { guid: bbMessage.guid });
+      return;
     }
 
     // Add message to buffer
@@ -598,10 +651,11 @@ export class MessageRouter {
       try {
         await this.blueBubblesClient.connect();
 
-        // Set up message listeners only if connected - use debounce for rapid messages
-        this.blueBubblesClient.on('message', async (message: BlueBubblesMessage) => {
-          this.debounceMessage(message);
-        });
+        // NOTE: Socket message listener intentionally disabled
+        // Messages are delivered via webhooks which is more reliable
+        // Socket is still used for typing indicators and other real-time features
+        // Having both socket + webhook causes duplicate processing and typing indicator issues
+        logInfo('BlueBubbles socket connected (using webhooks for message delivery)');
       } catch (blueBubblesError) {
         logWarn('BlueBubbles connection failed during startup - continuing with HTTP polling only', {
           error: (blueBubblesError as Error).message
@@ -760,6 +814,11 @@ export class MessageRouter {
       if (config.messaging.typingIndicators && !typingStarted) {
         typingGuid = bbMessage.chat_id || conversation.channelConversationId || resolvedChatGuid || null;
         if (typingGuid) {
+          logInfo('Starting typing indicator', { 
+            typingGuid, 
+            messageGuid: bbMessage.guid,
+            textPreview: bbMessage.text?.substring(0, 30)
+          });
           await this.blueBubblesClient.startTypingIndicator(typingGuid);
           typingStarted = true;
         }
@@ -770,6 +829,10 @@ export class MessageRouter {
           guid: bbMessage.guid,
           conversationId: conversation.id
         });
+        // Stop typing indicator before early return
+        if (typingStarted && typingGuid) {
+          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+        }
         return;
       }
 
@@ -837,6 +900,10 @@ export class MessageRouter {
           logWarn('Skipping dual-agent response due to rate limit - possible loop detected', {
             conversationId: conversation.id
           });
+          // Stop typing indicator before early return
+          if (typingStarted && typingGuid) {
+            await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+          }
           return;
         }
         
@@ -873,19 +940,29 @@ export class MessageRouter {
           });
 
           // Save assistant messages to database
+          // Strip || separators and replace with newlines for cleaner history
           for (const msg of result.messagesSent) {
-            await this.saveMessage(user.id, conversation.id, 'assistant', msg, {
+            const cleanedMsg = msg.replace(/\s*\|\|\s*/g, '\n').trim();
+            await this.saveMessage(user.id, conversation.id, 'assistant', cleanedMsg, {
               source: 'dual-agent',
               agentsSpawned: result.agentsSpawned
             } as MessageMetadata);
-            this.recordOutboundMessage(conversation.id, msg);
+            // Record EACH bubble separately for echo detection (iMessageAdapter splits on ||)
+            const bubbles = msg.split(/\s*\|\|\s*/).map(b => b.trim()).filter(b => b.length > 0);
+            for (const bubble of bubbles) {
+              this.recordOutboundMessage(conversation.id, bubble);
+            }
           }
         }
 
         if (typingStarted && typingGuid) {
+          logInfo('Stopping typing indicator after dual-agent', { typingGuid, typingStarted });
           await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+          logInfo('Typing indicator stopped after dual-agent', { typingGuid });
           typingStarted = false;
           typingGuid = null;
+        } else {
+          logInfo('Skipping stopTypingIndicator - not started or no guid', { typingStarted, typingGuid });
         }
         return;
       }
@@ -919,6 +996,10 @@ export class MessageRouter {
           logWarn('Skipping response due to rate limit - possible loop detected', {
             conversationId: conversation.id
           });
+          // Stop typing indicator before early return
+          if (typingStarted && typingGuid) {
+            await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+          }
           return;
         }
 
@@ -993,6 +1074,7 @@ export class MessageRouter {
       if (typingStarted && typingGuid && config.messaging.typingIndicators) {
         try {
           await this.blueBubblesClient.stopTypingIndicator(typingGuid);
+          logDebug('Typing indicator stopped (cleanup)', { typingGuid });
         } catch (error) {
           logWarn('Failed to stop typing indicator during cleanup', {
             chatGuid: typingGuid,

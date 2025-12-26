@@ -216,6 +216,14 @@ export interface AppConfig {
   security: SecurityConfig;
   messaging: MessagingConfig;
   agents: AgentsConfig;
+  agentmail: AgentMailConfig;
+}
+
+export interface AgentMailConfig {
+  apiKey: string;
+  enabled: boolean;
+  defaultDomain: string;
+  webhookSecret?: string;
 }
 
 export interface AgentsConfig {

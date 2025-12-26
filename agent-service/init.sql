@@ -130,3 +130,21 @@ CREATE TRIGGER update_reminders_updated_at BEFORE UPDATE ON reminders
 
 CREATE TRIGGER update_oauth_tokens_updated_at BEFORE UPDATE ON oauth_tokens
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- AgentMail Inboxes table
+CREATE TABLE IF NOT EXISTS agentmail_inboxes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    inbox_id VARCHAR(255) UNIQUE NOT NULL,
+    email_address VARCHAR(255) UNIQUE NOT NULL,
+    display_name VARCHAR(255),
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX idx_agentmail_inboxes_user ON agentmail_inboxes(user_id);
+
+CREATE TRIGGER update_agentmail_inboxes_updated_at BEFORE UPDATE ON agentmail_inboxes
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

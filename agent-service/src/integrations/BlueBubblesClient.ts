@@ -81,28 +81,25 @@ export class BlueBubblesClient extends EventEmitter {
       logDebug(`WebSocket event received: ${eventName}`, { args: JSON.stringify(args, null, 2) });
     });
 
-    // Message events
+    // Message events - ONLY handle 'new-message' to avoid duplicate processing
+    // The 'message' event was removed because it caused double-processing
     this.socket.on('new-message', (data: BlueBubblesMessage) => {
-      // Log full message data to check for account_guid, account_login fields
+      // Skip self-sent messages early (before emitting to handlers)
+      if (data.is_from_me === true || (data as any).isFromMe === true) {
+        logDebug('Socket: Skipping self-sent message (is_from_me=true)', { guid: data.guid });
+        return;
+      }
+      
       logInfo('New message received (new-message event)', { 
         guid: data.guid,
-        // Check for account-related fields that might indicate which address received the message
-        account: (data as any).account,
-        account_guid: (data as any).account_guid,
-        account_login: (data as any).account_login,
-        account_id: (data as any).account_id,
-        destination_caller_id: (data as any).destination_caller_id,
-        // Also log chat info
-        chat_id: data.chat_id,
-        service: data.service
+        is_from_me: data.is_from_me,
+        chat_id: data.chat_id
       });
       this.emit('message', data);
     });
 
-    this.socket.on('message', (data: BlueBubblesMessage) => {
-      logInfo('New message received (message event)', { guid: data.guid });
-      this.emit('message', data);
-    });
+    // NOTE: Removed 'message' event handler - it was causing duplicate processing
+    // BlueBubbles sends both 'new-message' and 'message' events for the same message
 
     this.socket.on('updated-message', (data: BlueBubblesMessage) => {
       logInfo('Message updated', { guid: data.guid });
@@ -210,19 +207,26 @@ export class BlueBubblesClient extends EventEmitter {
   }
 
   async stopTypingIndicator(chatGuid: string): Promise<void> {
-    if (!chatGuid || !this.activeTypingIndicators.has(chatGuid)) {
+    if (!chatGuid) {
+      logDebug('stopTypingIndicator: No chatGuid provided');
       return;
+    }
+    
+    const wasTracked = this.activeTypingIndicators.has(chatGuid);
+    if (!wasTracked) {
+      logInfo('stopTypingIndicator: chatGuid not in activeTypingIndicators, but sending DELETE anyway', { chatGuid });
     }
 
     try {
       const typingUrl = `${this.apiUrl}/api/v1/chat/${encodeURIComponent(chatGuid)}/typing?password=${encodeURIComponent(this.password)}`;
+      logInfo('Sending DELETE to stop typing', { chatGuid });
       await axios.delete(typingUrl);
       this.activeTypingIndicators.delete(chatGuid);
       
       // Set cooldown to prevent immediate restart
       this.typingCooldowns.set(chatGuid, Date.now() + this.typingCooldownMs);
       
-      logDebug('Stopped typing indicator via REST', { chatGuid });
+      logInfo('Stopped typing indicator via REST', { chatGuid, wasTracked });
     } catch (error) {
       logWarn('Failed to stop typing indicator', {
         chatGuid,

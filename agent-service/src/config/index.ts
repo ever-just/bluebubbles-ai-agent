@@ -97,7 +97,7 @@ export const config: AppConfig = {
   },
 
   messaging: {
-    typingIndicators: parseBoolean(process.env.TYPING_INDICATORS_ENABLED, true),
+    typingIndicators: parseBoolean(process.env.TYPING_INDICATORS_ENABLED, false), // Disabled - causes stuck typing indicator issues
     typingIndicatorDurationMs: parseInt(process.env.TYPING_INDICATOR_DURATION_MS || '5000', 10),
     maxResponseBurst: parseInt(process.env.MAX_RESPONSE_BURST || '3', 10),
     responseBurstDelayMs: parseInt(process.env.RESPONSE_BURST_DELAY_MS || '200', 10)
@@ -107,6 +107,13 @@ export const config: AppConfig = {
     enableDualAgent: parseBoolean(process.env.ENABLE_DUAL_AGENT, false),
     executionTimeoutSeconds: parseInt(process.env.AGENT_EXECUTION_TIMEOUT_SECONDS || '90', 10),
     maxToolIterations: parseInt(process.env.AGENT_MAX_TOOL_ITERATIONS || '8', 10)
+  },
+
+  agentmail: {
+    apiKey: process.env.AGENTMAIL_API_KEY || '',
+    enabled: parseBoolean(process.env.AGENTMAIL_ENABLED, false),
+    defaultDomain: process.env.AGENTMAIL_DEFAULT_DOMAIN || 'agentmail.to',
+    webhookSecret: process.env.AGENTMAIL_WEBHOOK_SECRET
   }
 };
 
