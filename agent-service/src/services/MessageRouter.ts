@@ -31,6 +31,8 @@ import type { ConversationTurn } from './ConversationSummarizer';
 import { createInteractionAgentRuntime, initializeIMessageAdapter } from '../agents';
 import { createWorkingMemoryLog, WorkingMemoryLog } from './WorkingMemoryLog';
 import { getSummarizationService } from './SummarizationService';
+import { getTypingManager } from './TypingManager';
+import { getAnthropicRequestManager } from './AnthropicRequestManager';
 
 export class MessageRouter {
   private userRepo: Repository<User>;
@@ -662,6 +664,29 @@ export class MessageRouter {
         });
       }
 
+      // Wire up event-driven typing indicators
+      // Typing starts when Claude API request begins, stops when it ends
+      const typingManager = getTypingManager();
+      const requestManager = getAnthropicRequestManager();
+      
+      // Set BlueBubbles client on typing manager
+      typingManager.setBlueBubblesClient(this.blueBubblesClient);
+      
+      // Subscribe to Anthropic request events for typing indicators
+      requestManager.on('request:start', ({ chatGuid }) => {
+        if (chatGuid) {
+          typingManager.startTyping(chatGuid, 'claude-request');
+        }
+      });
+      
+      requestManager.on('request:end', ({ chatGuid }) => {
+        if (chatGuid) {
+          typingManager.stopTyping(chatGuid, 'claude-request');
+        }
+      });
+      
+      logInfo('Event-driven typing indicators initialized');
+
       // Always start HTTP polling as backup
       this.startMessagePolling();
 
@@ -713,8 +738,8 @@ export class MessageRouter {
     let user: User | null = null;
     let conversation: Conversation | null = null;
     let chatGuid: string | null = null;
-    let typingStarted = false;
-    let typingGuid: string | null = null;
+    // NOTE: Typing indicators are now managed by TypingManager via AnthropicRequestManager events
+    // Old typingStarted/typingGuid variables removed - typing starts/stops automatically with Claude API calls
 
     try {
       // STARTUP PROTECTION: Skip messages received during grace period to prevent backlog processing
@@ -811,28 +836,13 @@ export class MessageRouter {
         bbMessage.chat_id ?? undefined
       );
 
-      if (config.messaging.typingIndicators && !typingStarted) {
-        typingGuid = bbMessage.chat_id || conversation.channelConversationId || resolvedChatGuid || null;
-        if (typingGuid) {
-          logInfo('Starting typing indicator', { 
-            typingGuid, 
-            messageGuid: bbMessage.guid,
-            textPreview: bbMessage.text?.substring(0, 30)
-          });
-          await this.blueBubblesClient.startTypingIndicator(typingGuid);
-          typingStarted = true;
-        }
-      }
+      // NOTE: Typing indicators now managed by TypingManager - starts automatically when Claude API is called
 
       if (this.isRecentAssistantEcho(conversation.id, bbMessage, processedMessage.text)) {
         logDebug('Skipping assistant echo detected via outbound cache', {
           guid: bbMessage.guid,
           conversationId: conversation.id
         });
-        // Stop typing indicator before early return
-        if (typingStarted && typingGuid) {
-          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-        }
         return;
       }
 
@@ -890,7 +900,8 @@ export class MessageRouter {
         userId: user.id,
         conversationId: conversation.id,
         isAdmin: userHandle !== 'unknown' && this.securityManager.isAdmin(userHandle),
-        runtimeContext
+        runtimeContext,
+        chatGuid: chatGuid || bbMessage.chat_id || undefined
       };
 
       // Use dual-agent system if enabled, otherwise use direct Claude service
@@ -900,10 +911,6 @@ export class MessageRouter {
           logWarn('Skipping dual-agent response due to rate limit - possible loop detected', {
             conversationId: conversation.id
           });
-          // Stop typing indicator before early return
-          if (typingStarted && typingGuid) {
-            await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-          }
           return;
         }
         
@@ -955,15 +962,7 @@ export class MessageRouter {
           }
         }
 
-        if (typingStarted && typingGuid) {
-          logInfo('Stopping typing indicator after dual-agent', { typingGuid, typingStarted });
-          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-          logInfo('Typing indicator stopped after dual-agent', { typingGuid });
-          typingStarted = false;
-          typingGuid = null;
-        } else {
-          logInfo('Skipping stopTypingIndicator - not started or no guid', { typingStarted, typingGuid });
-        }
+        // NOTE: Typing indicators now managed by TypingManager - stops automatically when Claude API completes
         return;
       }
 
@@ -975,12 +974,6 @@ export class MessageRouter {
       );
 
       chatGuid = await this.resolveChatGuid(conversation, bbMessage, user);
-
-      if (typingStarted && typingGuid) {
-        await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-        typingStarted = false;
-        typingGuid = null;
-      }
 
       if (aiResponse.success && aiResponse.data) {
         const sendEnabled = config.bluebubbles.sendEnabled;
@@ -996,10 +989,6 @@ export class MessageRouter {
           logWarn('Skipping response due to rate limit - possible loop detected', {
             conversationId: conversation.id
           });
-          // Stop typing indicator before early return
-          if (typingStarted && typingGuid) {
-            await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-          }
           return;
         }
 
@@ -1070,19 +1059,8 @@ export class MessageRouter {
       if (chatGuid && config.bluebubbles.sendEnabled) {
         await this.sendBlueBubblesMessage(chatGuid, "I encountered an error processing your message. Please try again.", 'error-catch', conversation?.id);
       }
-    } finally {
-      if (typingStarted && typingGuid && config.messaging.typingIndicators) {
-        try {
-          await this.blueBubblesClient.stopTypingIndicator(typingGuid);
-          logDebug('Typing indicator stopped (cleanup)', { typingGuid });
-        } catch (error) {
-          logWarn('Failed to stop typing indicator during cleanup', {
-            chatGuid: typingGuid,
-            error: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
     }
+    // NOTE: Typing indicators now managed by TypingManager - cleanup happens automatically
   }
 
   private prepareAssistantMessages(content: string): string[] {

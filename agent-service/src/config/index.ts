@@ -97,7 +97,7 @@ export const config: AppConfig = {
   },
 
   messaging: {
-    typingIndicators: parseBoolean(process.env.TYPING_INDICATORS_ENABLED, false), // Disabled - causes stuck typing indicator issues
+    typingIndicators: parseBoolean(process.env.TYPING_INDICATORS_ENABLED, true), // Re-enabled with event-driven TypingManager
     typingIndicatorDurationMs: parseInt(process.env.TYPING_INDICATOR_DURATION_MS || '5000', 10),
     maxResponseBurst: parseInt(process.env.MAX_RESPONSE_BURST || '3', 10),
     responseBurstDelayMs: parseInt(process.env.RESPONSE_BURST_DELAY_MS || '200', 10)

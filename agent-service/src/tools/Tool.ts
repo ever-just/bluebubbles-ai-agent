@@ -31,6 +31,7 @@ export interface ToolExecutionContext {
   conversationId: string;
   isAdmin: boolean;
   runtimeContext?: any; // Prompt runtime context for enhanced tool execution
+  chatGuid?: string; // BlueBubbles chat GUID for typing indicators
 }
 
 export interface ITool {

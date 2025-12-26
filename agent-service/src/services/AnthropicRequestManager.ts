@@ -1,3 +1,4 @@
+import { EventEmitter } from 'events';
 import { config } from '../config';
 import { logDebug, logWarn, logInfo, logError } from '../utils/logger';
 import { RateLimiter, ManagedPermit } from './RateLimiter';
@@ -10,6 +11,7 @@ interface RequestOptions {
   description?: string;
   tags?: string[];
   retryOn429?: boolean;
+  chatGuid?: string; // For typing indicator events
 }
 
 interface QueueItem<T> {
@@ -24,12 +26,13 @@ interface QueueItem<T> {
   tags?: string[];
   retryCount: number;
   retryOn429: boolean;
+  chatGuid?: string;
 }
 
 const DEFAULT_MAX_RETRIES = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 
-export class AnthropicRequestManager {
+export class AnthropicRequestManager extends EventEmitter {
   private readonly rateLimiter: RateLimiter;
   private readonly maxConcurrentRequests: number;
   private readonly inFlight = new Set<Promise<void>>();
@@ -38,6 +41,7 @@ export class AnthropicRequestManager {
   private processing = false;
 
   constructor() {
+    super();
     this.rateLimiter = new RateLimiter({
       requestsPerMinute: config.anthropic.requestLimitPerMinute,
       inputTokensPerMinute: config.anthropic.inputTokenLimitPerMinute,
@@ -59,7 +63,8 @@ export class AnthropicRequestManager {
       description: options.description,
       tags: options.tags,
       retryCount: 0,
-      retryOn429: options.retryOn429 ?? true
+      retryOn429: options.retryOn429 ?? true,
+      chatGuid: options.chatGuid
     } as QueueItem<T>;
 
     const promise = new Promise<T>((resolve, reject) => {
@@ -115,6 +120,14 @@ export class AnthropicRequestManager {
     const startTime = Date.now();
     let permit: ManagedPermit | null = null;
 
+    // Emit request:start event for typing indicators
+    if (item.chatGuid) {
+      logInfo('AnthropicRequestManager: Emitting request:start', { chatGuid: item.chatGuid, description: item.description });
+      this.emit('request:start', { chatGuid: item.chatGuid, description: item.description });
+    } else {
+      logDebug('AnthropicRequestManager: No chatGuid, skipping request:start event', { description: item.description });
+    }
+
     try {
       permit = await this.rateLimiter.reserve(item.estimatedInputTokens, item.estimatedOutputTokens);
       const result = await item.execute();
@@ -142,6 +155,7 @@ export class AnthropicRequestManager {
           error: error instanceof Error ? error.message : String(error)
         });
 
+        // Don't emit request:end on retry - typing should continue
         await this.delay(delay);
         this.queue.push(item);
         return;
@@ -153,6 +167,11 @@ export class AnthropicRequestManager {
 
       this.logFailure(item, error, Date.now() - startTime);
       item.reject(error);
+    } finally {
+      // Emit request:end event for typing indicators (except on retry which returns early)
+      if (item.chatGuid) {
+        this.emit('request:end', { chatGuid: item.chatGuid, description: item.description });
+      }
     }
   }
 

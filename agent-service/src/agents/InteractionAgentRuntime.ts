@@ -7,6 +7,7 @@ import { logInfo, logError, logDebug, logWarn } from '../utils/logger';
 import { config } from '../config';
 import { getActionAcknowledgment, detectActionType, looksLikeSearchQuery, ActionType } from '../utils/actionAcknowledgments';
 import { formatSearchResults } from '../utils/messageFormatting';
+import { getAnthropicRequestManager } from '../services/AnthropicRequestManager';
 
 const MAX_TOOL_ITERATIONS = 8;
 
@@ -62,6 +63,7 @@ export interface InteractionResult {
 export class InteractionAgentRuntime {
   private agent: InteractionAgent;
   private anthropic: Anthropic;
+  private requestManager = getAnthropicRequestManager();
   private batchManager: ExecutionBatchManager;
   private iMessageAdapter: iMessageAdapter;
   private context: ToolExecutionContext;
@@ -164,13 +166,23 @@ export class InteractionAgentRuntime {
         ];
         
         // Call Claude with interaction tools + server-side tools (web_search)
-        const response = await this.anthropic.messages.create({
-          model: config.anthropic.model || 'claude-sonnet-4-20250514',
-          max_tokens: config.anthropic.responseMaxTokens || 1024,
-          system: systemPrompt,
-          tools: allTools as any,
-          messages
-        });
+        // Use requestManager to emit typing indicator events
+        // Only pass chatGuid on FIRST iteration to avoid restarting typing on tool follow-ups
+        const response = await this.requestManager.execute(
+          () => this.anthropic.messages.create({
+            model: config.anthropic.model || 'claude-sonnet-4-20250514',
+            max_tokens: config.anthropic.responseMaxTokens || 1024,
+            system: systemPrompt,
+            tools: allTools as any,
+            messages
+          }),
+          {
+            description: iterationCount === 1 ? 'interaction-agent-claude' : 'interaction-agent-tool-followup',
+            estimatedInputTokens: 1000,
+            estimatedOutputTokens: config.anthropic.responseMaxTokens || 1024,
+            chatGuid: iterationCount === 1 ? this.chatGuid : undefined // Only start typing on first call
+          }
+        );
 
         // Log all content block types for debugging
         logDebug('Response content blocks', {

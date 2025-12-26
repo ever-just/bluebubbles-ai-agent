@@ -144,7 +144,8 @@ export class ClaudeServiceEnhanced {
       }), {
         description: 'claude-sendMessage',
         estimatedInputTokens: this.estimateInputTokens(messages),
-        estimatedOutputTokens: this.responseMaxTokens
+        estimatedOutputTokens: this.responseMaxTokens,
+        chatGuid: toolContext.chatGuid
       });
 
       const toolsUsed: string[] = [];
@@ -192,7 +193,8 @@ export class ClaudeServiceEnhanced {
         }), {
           description: 'claude-tool-followup',
           estimatedInputTokens: this.estimateInputTokens(messages),
-          estimatedOutputTokens: this.responseMaxTokens
+          estimatedOutputTokens: this.responseMaxTokens,
+          chatGuid: toolContext.chatGuid
         });
       }
 
@@ -355,6 +357,7 @@ export class ClaudeServiceEnhanced {
       estimatedOutputTokens: number;
       priority?: number;
       tags?: string[];
+      chatGuid?: string;
     }
   ): Promise<T> {
     let attempt = 0;
@@ -369,7 +372,8 @@ export class ClaudeServiceEnhanced {
             estimatedInputTokens: options.estimatedInputTokens,
             estimatedOutputTokens: options.estimatedOutputTokens,
             description: options.description,
-            tags: options.tags
+            tags: options.tags,
+            chatGuid: options.chatGuid
           }
         );
       } catch (error: any) {
