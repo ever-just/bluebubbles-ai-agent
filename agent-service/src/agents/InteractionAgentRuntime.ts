@@ -130,7 +130,19 @@ export class InteractionAgentRuntime {
 
     // PRE-EMPTIVE ACKNOWLEDGMENT: For user messages that look like search queries,
     // send acknowledgment BEFORE Claude API call (since web_search is a server tool)
-    if (messageType === 'user' && looksLikeSearchQuery(content) && !hasAcknowledged) {
+    // Skip for tapback reactions (e.g., "Liked "what's the weather?"") - they contain quoted text that may match
+    // Note: iMessage uses curly quotes (" " U+201C U+201D) not straight quotes (")
+    // Also handles emoji format: "Reacted 😂 to "message text""
+    const isTapbackReaction = /^(Liked|Loved|Disliked|Laughed at|Emphasized|Questioned)\s+["\u201C\u201D]/i.test(content)
+      || /^Reacted\s+.+\s+to\s+["\u201C\u201D]/i.test(content);
+    const looksLikeSearch = looksLikeSearchQuery(content);
+    logInfo('Pre-emptive ack check', { 
+      content: content.substring(0, 50), 
+      isTapbackReaction, 
+      looksLikeSearch,
+      messageType 
+    });
+    if (messageType === 'user' && looksLikeSearch && !hasAcknowledged && !isTapbackReaction) {
       const ack = getActionAcknowledgment('web_search');
       await this.iMessageAdapter.sendToUser(ack, this.chatGuid, true);
       messagesSent.push(ack);

@@ -904,6 +904,19 @@ export class MessageRouter {
         chatGuid: chatGuid || bbMessage.chat_id || undefined
       };
 
+      // Skip processing for tapback reactions - no need to call Claude API
+      // iMessage tapbacks look like: "Liked "message text"", "Loved "message text"", etc.
+      // Also handles emoji format: "Reacted 😂 to "message text""
+      const isTapbackReaction = /^(Liked|Loved|Disliked|Laughed at|Emphasized|Questioned)\s+["\u201C\u201D]/i.test(processedMessage.text || '')
+        || /^Reacted\s+.+\s+to\s+["\u201C\u201D]/i.test(processedMessage.text || '');
+      if (isTapbackReaction) {
+        logInfo('Skipping Claude API call for tapback reaction - no response needed', {
+          conversationId: conversation.id,
+          messagePreview: (processedMessage.text || '').substring(0, 50)
+        });
+        return;
+      }
+
       // Use dual-agent system if enabled, otherwise use direct Claude service
       if (this.dualAgentEnabled) {
         // Check rate limit before processing dual-agent response
